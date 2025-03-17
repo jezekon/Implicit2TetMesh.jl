@@ -1,6 +1,6 @@
 module Modification
 
-export BoundedPlane, warp_mesh_by_planes_sdf!
+export BoundedPlane, warp_mesh_by_planes_sdf!, PlaneDefinition
 
 using StaticArrays
 using LinearAlgebra
