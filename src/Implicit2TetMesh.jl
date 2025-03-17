@@ -12,5 +12,15 @@ using .GenerateMesh
 include("Optimization/Optimization.jl")
 using .Optimization
 
+# Mesh modification (cutting planes)
+include("Modification/Modification.jl")
+using .Modification
+
+# Utility functions for mesh analysis
+include("Utils/Utils.jl")
+using .Utils
+
+# Export types and functions from submodules
+export PlaneDefinition
 
 end # module Implicit2TetMesh
