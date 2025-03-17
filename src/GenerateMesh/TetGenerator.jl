@@ -1,160 +1,8 @@
 # ----------------------------
-# Block mesh structure (extended with node_hash)
-# ----------------------------
-mutable struct BlockMesh
-  nx::Int
-  ny::Int
-  nz::Int
-  grid::Array{SVector{3,Float64},3}          # 3D array of node coordinates (basic grid) using static vectors
-  grid_step::Float64
-  grid_tol::Float64
-  SDF::Array{Float64,3}                      # SDF values
-  X::Vector{SVector{3,Float64}}              # List of physical node coordinates (nodes used in mesh)
-  IEN::Vector{Vector{Int64}}                 # Tetrahedral connectivity (elements)
-  INE::Vector{Vector{Int64}}                 # Inverse connectivity: for each node, list of adjacent elements
-  node_sdf::Vector{Float64}                  # SDF values at nodes
-  node_map::Dict{Int64,Int64}                # Mapping from original grid node index -> new node index
-  cell_center_map::Dict{Tuple{Int,Int,Int},Int64}  # Mapping for cell centers (Steiner points)
-  node_hash::Dict{NTuple{3,Float64},Int64}   # Global dictionary for merging nodes
-
-  function BlockMesh(fine_sdf::Array, fine_grid::Array)
-
-    # Convert fine_grid into a 3D array of SVectors
-    grid = Array{SVector{3,Float64},3}(undef, size(fine_grid))
-    for i in eachindex(fine_grid)
-      # Assume fine_grid[i] is an array of Float64; convert to SVector
-      grid[i] = SVector{3,Float64}(fine_grid[i]...)
-    end
-    step = maximum(abs.(grid[1, 1, 1] - grid[2, 2, 2]))
-    sdf = Float64.(fine_sdf)
-    nx, ny, nz = size(grid)
-
-    mesh = new(nx, ny, nz)
-    mesh.grid = grid
-    mesh.grid_step = step
-    mesh.grid_tol = 1e-6 * step
-    mesh.SDF = sdf
-    mesh.node_map = Dict{Int64,Int64}()
-    mesh.cell_center_map = Dict{Tuple{Int,Int,Int},Int64}()
-    mesh.X = Vector{SVector{3,Float64}}()
-    mesh.IEN = Vector{Vector{Int64}}()
-    mesh.INE = Vector{Vector{Int64}}()
-    mesh.node_sdf = Vector{Float64}()
-    mesh.node_hash = Dict{NTuple{3,Float64},Int64}()
-    return mesh
-  end
-end
-
-# ----------------------------
-# Helper function: Get SDF values at the 8 corners of a cell (unchanged)
-# ----------------------------
-function get_cell_sdf_values(mesh::BlockMesh, i::Int, j::Int, k::Int)
-  1 <= i < mesh.nx || throw(BoundsError(mesh.SDF, i))
-  1 <= j < mesh.ny || throw(BoundsError(mesh.SDF, j))
-  1 <= k < mesh.nz || throw(BoundsError(mesh.SDF, k))
-  return SVector{8}(
-    mesh.SDF[i, j, k],       # front-bottom-left
-    mesh.SDF[i+1, j, k],     # front-bottom-right
-    mesh.SDF[i+1, j+1, k],   # front-top-right
-    mesh.SDF[i, j+1, k],     # front-top-left
-    mesh.SDF[i, j, k+1],     # back-bottom-left
-    mesh.SDF[i+1, j, k+1],   # back-bottom-right
-    mesh.SDF[i+1, j+1, k+1], # back-top-right
-    mesh.SDF[i, j+1, k+1]    # back-top-left
-  )
-end
-
-# ----------------------------
-# New: Definition of Schlafli orthoscheme connectivity
-# ----------------------------
-const schlafli_tet_connectivity = [
-  [1, 2, 3, 7],  # Path 1: x, y, z
-  [1, 6, 2, 7],  # Path 2: x, z, y
-  [1, 3, 4, 7],  # Path 3: y, x, z
-  [1, 4, 8, 7],  # Path 4: y, z, x
-  [1, 5, 6, 7],  # Path 5: z, x, y
-  [1, 8, 5, 7]   # Path 6: z, y, x
-]
-
-# ----------------------------
 # Quantization function – unchanged
 # ----------------------------
 function quantize(p::SVector{3,Float64}, tol::Float64)
   return (round(p[1] / tol) * tol, round(p[2] / tol) * tol, round(p[3] / tol) * tol)
-end
-
-# ----------------------------
-# Helper function to compute shape functions for a hex8 element
-# Accepts local coordinates in [0,1] (normalized tile_ref) and returns shape functions
-# computed with standard transformation to [-1,1]
-# ----------------------------
-function shape_functions(ξηζ::SVector{3,Float64})::SVector{8,Float64}
-  # Transform local coordinates from [0,1] to [-1,1]
-  ξ = 2 * ξηζ[1] - 1.0
-  η = 2 * ξηζ[2] - 1.0
-  ζ = 2 * ξηζ[3] - 1.0
-  coef = 1 / 8.0
-  return @SVector [
-    coef * (1 - ξ) * (1 - η) * (1 - ζ),
-    coef * (1 + ξ) * (1 - η) * (1 - ζ),
-    coef * (1 + ξ) * (1 + η) * (1 - ζ),
-    coef * (1 - ξ) * (1 + η) * (1 - ζ),
-    coef * (1 - ξ) * (1 - η) * (1 + ζ),
-    coef * (1 + ξ) * (1 - η) * (1 + ζ),
-    coef * (1 + ξ) * (1 + η) * (1 + ζ),
-    coef * (1 - ξ) * (1 + η) * (1 + ζ)
-  ]
-end
-
-# ----------------------------
-# Helper function: SDF evaluation using trilinear interpolation
-# ----------------------------
-function eval_sdf(mesh::BlockMesh, p::SVector{3,Float64})
-  # Get minimum and maximum grid coordinates
-  vmin = mesh.grid[1, 1, 1]
-  vmax = mesh.grid[end, end, end]
-  
-  # Normalize point coordinates to interval [0,1]
-  r = (p .- vmin) ./ (vmax .- vmin)
-  
-  # Convert to grid indices
-  i_f = r[1] * (mesh.nx - 1) + 1
-  j_f = r[2] * (mesh.ny - 1) + 1
-  k_f = r[3] * (mesh.nz - 1) + 1
-  
-  i0 = clamp(floor(Int, i_f), 1, mesh.nx - 1)
-  j0 = clamp(floor(Int, j_f), 1, mesh.ny - 1)
-  k0 = clamp(floor(Int, k_f), 1, mesh.nz - 1)
-  
-  i1 = i0 + 1
-  j1 = j0 + 1
-  k1 = k0 + 1
-  
-  # Local weights
-  xd = i_f - i0
-  yd = j_f - j0
-  zd = k_f - k0
-  
-  # Get SDF values at the eight corners of the cell
-  c000 = mesh.SDF[i0, j0, k0]
-  c100 = mesh.SDF[i1, j0, k0]
-  c010 = mesh.SDF[i0, j1, k0]
-  c110 = mesh.SDF[i1, j1, k0]
-  c001 = mesh.SDF[i0, j0, k1]
-  c101 = mesh.SDF[i1, j0, k1]
-  c011 = mesh.SDF[i0, j1, k1]
-  c111 = mesh.SDF[i1, j1, k1]
-  
-  # Trilinear interpolation
-  c00 = c000 * (1 - xd) + c100 * xd
-  c01 = c001 * (1 - xd) + c101 * xd
-  c10 = c010 * (1 - xd) + c110 * xd
-  c11 = c011 * (1 - xd) + c111 * xd
-  
-  c0 = c00 * (1 - yd) + c10 * yd
-  c1 = c01 * (1 - yd) + c11 * yd
-  
-  return c0 * (1 - zd) + c1 * zd
 end
 
 # ----------------------------
@@ -412,33 +260,6 @@ function generate_mesh!(mesh::BlockMesh, scheme::String)
   @info "Mesh created: $(length(mesh.X)) nodes and $(length(mesh.IEN)) tetrahedra"
 end
 
-# ----------------------------
-# Export mesh to VTK (unchanged logic, minor type adjustments)
-# ----------------------------
-function export_mesh_vtk(mesh::BlockMesh, filename::String)
-  npoints = length(mesh.X)
-  points = zeros(Float64, 3, npoints)
-  @inbounds for i in 1:npoints
-    points[:, i] = mesh.X[i]
-  end
-  cells = [MeshCell(VTKCellTypes.VTK_TETRA, tet) for tet in mesh.IEN]
-  vtkfile = vtk_grid(filename, points, cells)
-  vtk_point_data(vtkfile, mesh.node_sdf, "sdf")
-  vtk_save(vtkfile)
-end
-
-# ----------------------------
-# Helper function: Approximation of the SDF gradient at point p using central differences
-# ----------------------------
-function approximate_gradient(mesh::BlockMesh, p::SVector{3,Float64}; h::Float64=1e-3)
-  dx = SVector{3,Float64}(h, 0.0, 0.0)
-  dy = SVector{3,Float64}(0.0, h, 0.0)
-  dz = SVector{3,Float64}(0.0, 0.0, h)
-  df_dx = (eval_sdf(mesh, p + dx) - eval_sdf(mesh, p - dx)) / (2 * h)
-  df_dy = (eval_sdf(mesh, p + dy) - eval_sdf(mesh, p - dy)) / (2 * h)
-  df_dz = (eval_sdf(mesh, p + dz) - eval_sdf(mesh, p - dz)) / (2 * h)
-  return SVector{3,Float64}(df_dx, df_dy, df_dz)
-end
 
 # Function to calculate the length of the longest edge between nodes in all tetrahedra
 # TODO: Just take the initial discretization and take only one element (for speedup)
@@ -458,31 +279,6 @@ function longest_edge(mesh::BlockMesh)
   return max_length
 end
 
-
-# Estimate the gradient of the SDF around the node
-# First, let's modify compute_gradient to work with both node indices and positions
-function compute_gradient(mesh::BlockMesh, p::SVector{3,Float64}; δ::Float64=1e-3)
-  # Pre-allocate unit vectors as static vectors for better performance
-  unit_vectors = (
-    SVector{3,Float64}(1.0, 0.0, 0.0),
-    SVector{3,Float64}(0.0, 1.0, 0.0),
-    SVector{3,Float64}(0.0, 0.0, 1.0)
-  )
-
-  # Use tuple comprehension for better compile-time optimization
-  grad = ntuple(3) do d
-    unit_vec = unit_vectors[d]
-    # Compute central difference
-    (eval_sdf(mesh, p + δ * unit_vec) - eval_sdf(mesh, p - δ * unit_vec)) / (2δ)
-  end
-
-  return SVector{3,Float64}(grad)
-end
-
-# Add method for node index input
-function compute_gradient(mesh::BlockMesh, node_index::Int; δ::Float64=1e-3)
-  return compute_gradient(mesh, mesh.X[node_index]; δ=δ)
-end
 
 # Update warp_node_to_isocontour! to handle positions directly
 function warp_node_to_isocontour!(mesh::BlockMesh, node_index::Int, max_iter)
