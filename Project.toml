@@ -1,0 +1,4 @@
+name = "Implicit2TetMesh"
+uuid = "2ee54d01-0bfe-46b7-bcc9-ff486d194268"
+authors = ["jezekon <78500480+jezekon@users.noreply.github.com>"]
+version = "0.1.0"
