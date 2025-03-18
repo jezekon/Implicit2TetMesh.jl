@@ -73,6 +73,55 @@ function slice_ambiguous_tetrahedra!(mesh::BlockMesh)
   @info "After complete tetrahedral cutting: $(length(mesh.IEN)) tetrahedra"
 end
 
+"""
+    remove_nodes_outside_isocontour!(mesh::BlockMesh, tol::Float64=mesh.grid_tol)
+
+Removes all nodes with SDF values less than -tol and all tetrahedral elements 
+that contain these nodes. This function helps clean up the mesh by removing
+elements that lie outside the intended body defined by the zero isocontour.
+
+# Arguments
+- `mesh::BlockMesh`: The mesh to be cleaned
+- `tol::Float64`: Tolerance value to determine which nodes are outside (default: mesh.grid_tol)
+"""
+function remove_nodes_outside_isocontour!(mesh::BlockMesh, tol::Float64=mesh.grid_tol)
+    @info "Removing nodes with SDF values less than -$tol and their connected elements..."
+    
+    # Identify nodes with SDF values less than -tol
+    outside_nodes = Set{Int}()
+    for (node_idx, sdf) in enumerate(mesh.node_sdf)
+        if sdf < -tol
+            push!(outside_nodes, node_idx)
+        end
+    end
+    
+    if isempty(outside_nodes)
+        @info "No nodes found with SDF values less than -$tol."
+        return mesh
+    end
+    
+    @info "Found $(length(outside_nodes)) nodes with SDF values less than -$tol."
+    
+    # Identify elements containing these nodes using inverse connectivity
+    # This is more efficient than checking each element individually
+    outside_elements = Set{Int}()
+    for node_idx in outside_nodes
+        # Add all elements connected to this outside node
+        union!(outside_elements, mesh.INE[node_idx])
+    end
+    
+    # Count elements before removal
+    original_element_count = length(mesh.IEN)
+    
+    # Keep only elements not marked for removal
+    mesh.IEN = [element for (idx, element) in enumerate(mesh.IEN) if !(idx in outside_elements)]
+    
+    removed_count = original_element_count - length(mesh.IEN)
+    @info "Removed $removed_count elements ($(round(removed_count/original_element_count*100, digits=2))%) containing nodes outside the isocontour."
+    
+    return mesh
+end
+
 
 # Function to warp nodes onto the isosurface based on element connectivity
 function adjust_nodes_to_isosurface!(mesh::BlockMesh)
@@ -248,7 +297,10 @@ function adjust_nodes_to_isosurface!(mesh::BlockMesh)
   end
   
   @info "Node warping complete. $nodes_moved nodes were moved to the isosurface. $nodes_skipped nodes were skipped to prevent element inversion."
-  
+ 
+  # Remove nodes outside the isocontour and elements that contain them
+  remove_nodes_outside_isocontour!(mesh)
+
   # After warping, we need to update the mesh connectivity
   update_connectivity!(mesh)
 end
