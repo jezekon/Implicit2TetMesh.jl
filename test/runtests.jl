@@ -43,13 +43,13 @@ using Implicit2TetMesh.Utils
   TetMesh_volumes(mesh)
   optimize_mesh!(mesh)
 
-  export_mesh_vtk(mesh, "$(name)_TriMesh.vtu")
+  export_mesh_vtk(mesh, "$(taskName)_TriMesh.vtu")
 
   # Apply cutting planes only if they are defined
   if !isempty(plane_definitions)
     warp_mesh_by_planes_sdf!(mesh, plane_definitions, warp_param)
     update_connectivity!(mesh)
-    export_mesh_vtk(mesh, "$(name)_TriMesh_cut.vtu")
+    export_mesh_vtk(mesh, "$(taskName)_TriMesh_cut.vtu")
   end
 
   TetMesh_volumes(mesh)
