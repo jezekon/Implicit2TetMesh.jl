@@ -1,6 +1,6 @@
 module Modification
 
-export BoundedPlane, warp_mesh_by_planes_sdf!, PlaneDefinition
+export BoundedPlane, warp_mesh_by_planes_sdf!, PlaneDefinition, Rectangle, Square, Circle, Ellipse
 
 using StaticArrays
 using LinearAlgebra
