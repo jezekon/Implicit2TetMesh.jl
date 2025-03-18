@@ -95,7 +95,44 @@ function approximate_planes_gradient(mesh::BlockMesh, p::SVector{3,Float64}, pla
 end
 
 
+# Function to move a node to the zero level of planes_sdf
 function warp_node_to_planes_isocontour!(mesh::BlockMesh, node_index::Int, plane_definitions::Vector{PlaneDefinition}, max_iter::Int)
+    tol = mesh.grid_tol
+    current_position = mesh.X[node_index]
+    
+    for iter in 1:max_iter
+        # Evaluate planes_sdf at current position
+        f = eval_planes_sdf(mesh, current_position, plane_definitions)
+        
+        # If we're close enough to the isosurface, end
+        abs2(f) < tol * tol && break
+        
+        # Calculate gradient for displacement direction
+        grad = approximate_planes_gradient(mesh, current_position, plane_definitions)
+        norm_grad_squared = sum(abs2, grad)
+        
+        # If gradient is too small, end
+        norm_grad_squared < 1e-16 && break
+        
+        # Newton step
+        dp = (f / norm_grad_squared) * grad
+        current_position -= dp
+    end
+    
+    # Calculate current planes_sdf value after warping
+    current_sdf = eval_planes_sdf(mesh, current_position, plane_definitions)
+    
+    # Update node position and its SDF value
+    mesh.X[node_index] = current_position
+    if abs(current_sdf) < tol*2
+        mesh.node_sdf[node_index] = 0.0
+    else
+        mesh.node_sdf[node_index] = current_sdf
+    end
+end
+
+
+function warp_node_to_planes_isocontour_new!(mesh::BlockMesh, node_index::Int, plane_definitions::Vector{PlaneDefinition}, max_iter::Int)
     # Use a tighter tolerance for convergence
     tol = mesh.grid_tol * 0.01  # Much stricter tolerance
     current_position = mesh.X[node_index]
