@@ -6,6 +6,7 @@ using StaticArrays
 using LinearAlgebra
 
 using Implicit2TetMesh.Fundamentals
+using Implicit2TetMesh.GenerateMesh
 
 include("CuttingPlaneTypes.jl")
 include("ModifyResultingMesh.jl")
