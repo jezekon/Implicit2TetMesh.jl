@@ -10,11 +10,14 @@ using Implicit2TetMesh.Utils
 
 @testset "Implicit2TetMesh.jl" begin
 
-  taskName = "beam_vfrac_04_B-1.0_smooth-1_Approximation"
+  # taskName = "beam_vfrac_04_B-1.0_smooth-1_Approximation"
+  taskName = "beam_vfrac_04_B-1.0_smooth-1_Interpolation"
 
-  @load "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-1_Approximation.jld2" fine_grid
-  @load "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-1_Approximation.jld2" fine_sdf
-
+  # @load "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-1_Approximation.jld2" fine_grid
+  # @load "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-1_Approximation.jld2" fine_sdf
+  @load "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-1_Interpolation.jld2" fine_grid
+  @load "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-1_Interpolation.jld2" fine_sdf
+  
   scheme = "A15"
   
   # Definice rovin
