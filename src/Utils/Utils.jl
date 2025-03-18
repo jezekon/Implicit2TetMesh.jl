@@ -5,6 +5,7 @@ export assess_mesh_quality, TetMesh_volumes, slice_mesh_with_plane!
 using Statistics
 using StaticArrays
 using LinearAlgebra
+using Printf 
 
 using Implicit2TetMesh.Fundamentals
 using Implicit2TetMesh.GenerateMesh
