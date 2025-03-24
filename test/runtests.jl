@@ -10,23 +10,24 @@ using Implicit2TetMesh.Utils
 
 @testset "Implicit2TetMesh.jl" begin
 
-  # taskName = "beam_vfrac_04_B-1.0_smooth-1_Approximation"
-  # taskName = "beam_vfrac_04_B-1.0_smooth-1_Interpolation"
+  taskName = "beam_vfrac_04_B-1.0_smooth-1_Approx"
+  # taskName = "beam_vfrac_04_B-1.0_smooth-1_Interp"
  
-  # taskName = "beam_vfrac_04_B-1.0_smooth-2_Approximation"
-  taskName = "beam_vfrac_04_B-1.0_smooth-2_Interpolation"
+  # taskName = "beam_vfrac_04_B-1.0_smooth-2_Approx"
+  # taskName = "beam_vfrac_04_B-1.0_smooth-2_Interp"
 
   # @load "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-1_Approximation.jld2" fine_grid
   # @load "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-1_Approximation.jld2" fine_sdf
-  # @load "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-1_Interpolation.jld2" fine_grid
-  # @load "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-1_Interpolation.jld2" fine_sdf
+  @load "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-1_Interpolation.jld2" fine_grid
+  @load "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-1_Interpolation.jld2" fine_sdf
 
   # @load "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-2_Approximation.jld2" fine_grid
   # @load "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-2_Approximation.jld2" fine_sdf
-  @load "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-2_Interpolation.jld2" fine_grid
-  @load "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-2_Interpolation.jld2" fine_sdf
+  # @load "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-2_Interpolation.jld2" fine_grid
+  # @load "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-2_Interpolation.jld2" fine_sdf
  
   scheme = "A15"
+  # scheme = "Schlafli"
   
   # Definice rovin
   plane_definitions = [
@@ -54,13 +55,13 @@ using Implicit2TetMesh.Utils
   TetMesh_volumes(mesh)
   optimize_mesh!(mesh)
 
-  export_mesh_vtk(mesh, "$(taskName)_TriMesh.vtu")
+  export_mesh_vtk(mesh, "$(taskName)_TriMesh-$(scheme).vtu")
 
   # Apply cutting planes only if they are defined
   if !isempty(plane_definitions)
     warp_mesh_by_planes_sdf!(mesh, plane_definitions, warp_param)
     update_connectivity!(mesh)
-    export_mesh_vtk(mesh, "$(taskName)_TriMesh_cut.vtu")
+    export_mesh_vtk(mesh, "$(taskName)_TriMesh-$(scheme)_cut.vtu")
   end
 
   TetMesh_volumes(mesh)
