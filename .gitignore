@@ -2,3 +2,9 @@
 *.jld2
 *.vtk
 *.vtu
+*.edge
+*.ele
+*.face
+*.node
+*.smesh
+*.stl
