@@ -256,7 +256,8 @@ function warp_mesh_by_planes_sdf!(mesh::BlockMesh, plane_definitions::Vector{Pla
     plane_sdf = eval_planes_sdf(mesh, mesh.X[i], plane_definitions)
     # If the node is close enough to the plane (from both sides), add it to nodes to warp
     # if abs(plane_sdf) < threshold_sdf
-    if plane_sdf < threshold_sdf
+    # if plane_sdf < threshold_sdf
+    if plane_sdf < 0. # one-side warp
       push!(nodes_to_warp, i)
     end
   end
