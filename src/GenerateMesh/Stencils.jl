@@ -142,6 +142,67 @@ function cut_edge!(
 end
 
 
+# --- Zde vložte definice funkcí ---
+# check_tetrahedron_orientation(mesh::BlockMesh, tet::Vector{Int})
+# fix_tetrahedron_orientation!(mesh::BlockMesh, tet::Vector{Int})
+# --- Konec definic funkcí ---
+
+"""
+    check_tetrahedron_orientation(mesh::BlockMesh, tet::Vector{Int})
+
+Checks if a tetrahedron has positive orientation (positive Jacobian determinant).
+Returns true for correctly oriented tetrahedra, false for inverted ones.
+"""
+function check_tetrahedron_orientation(mesh::BlockMesh, tet::Vector{Int})
+    # Get vertices of the tetrahedron
+    # Ensure we don't try to access index 0 or out of bounds
+    if length(tet) != 4 || any(i -> i <= 0 || i > length(mesh.X), tet)
+        @warn "Invalid tetrahedron indices for orientation check: $tet"
+        return false # Consider invalid index as bad orientation
+    end
+    vertices = [mesh.X[tet[i]] for i in 1:4]
+
+    # Calculate edge vectors from first vertex
+    a = vertices[2] - vertices[1]
+    b = vertices[3] - vertices[1]
+    c = vertices[4] - vertices[1]
+
+    # Calculate the Jacobian determinant (volume is det/6)
+    # Use a small tolerance to avoid issues with near-zero volume tets
+    det_value = dot(a, cross(b, c))
+
+    # Return true for positive orientation, false for negative or zero
+    # Consider zero volume as potentially problematic too, though not strictly inverted.
+    # Adjust tolerance as needed. Using 1e-12 as a small positive threshold.
+    return det_value > 1e-12
+end
+
+"""
+    fix_tetrahedron_orientation!(mesh::BlockMesh, tet::Vector{Int})
+
+Fixes the orientation of a tetrahedron by swapping two vertices if needed.
+This modifies the input tetrahedron in-place. Returns true if fixed, false otherwise.
+"""
+function fix_tetrahedron_orientation!(mesh::BlockMesh, tet::Vector{Int})
+    if length(tet) != 4
+         @warn "Attempting to fix orientation of non-tetrahedron: $tet"
+         return false
+    end
+    if !check_tetrahedron_orientation(mesh, tet)
+        # Swap the last two vertices to change orientation
+        # This is a common convention for flipping orientation.
+        tet[3], tet[4] = tet[4], tet[3]
+        # Optional: Double-check if the flip actually worked
+        # if !check_tetrahedron_orientation(mesh, tet)
+        #     @warn "Failed to fix orientation for tet: $tet after swapping 3 and 4."
+        #     # Potentially try swapping other pairs? Or just report.
+        # end
+        return true  # Orientation was potentially fixed
+    end
+    return false # No fix needed
+end
+
+
 # Funkce, která aplikuje logiku "trim spikes" na jeden tetraedr
 # Vrací vektor nových tetraedrů nahrazujících vstupní.
 # Modifikuje mesh a cut_map prostřednictvím cut_edge!
@@ -157,78 +218,42 @@ function apply_stencil_trim_spikes!(
     tol = mesh.grid_tol # Tolerance pro kontrolu nuly
 
     # --- Kontrola speciálních případů ---
-
-    # 1. Případ: Všechny vrcholy jsou uvnitř nebo na hranici (SDF >= -tol)
-    #    V C++ je to vphi[p]<=0 && vphi[q]<=0 && vphi[r]<=0 && vphi[s]<=0
-    #    což znamená, že tetraedr *nevyčnívá* (je celý uvnitř nebo na hranici)
-    #    V Julia konvenci (SDF > 0 uvnitř) to znamená, že všechny SDF jsou <= tol
-    #    ALE C++ kód zde kontroluje, zda *nevyčnívá*, tj. zda není potřeba řezat.
-    #    Řezat je potřeba, pokud je *alespoň jeden* vrchol kladný (vně v C++, uvnitř v Julii).
-    #    Takže C++ `continue` znamená "ponechat tet, pokud jsou všechny <= 0".
-    #    Julia ekvivalent: Ponechat tet, pokud jsou všechny SDF <= tol.
-    # if all(s -> s <= tol, node_sdf) # Původní C++ logika: pokud nic nevyčnívá (vše <= 0), nedělej nic
-    #     # Tento tet je celý uvnitř nebo na hranici, není třeba řezat.
-    #     # Ale my chceme jen část S >= 0. Takže pokud je celý S <= 0, měl by být zahozen?
-    #     # Ne, C++ kód ho ponechává. Zdá se, že cílem C++ je odstranit části > 0.
-    #     # Cílem Julia kódu je ponechat části >= 0.
-    #     # Takže pokud jsou všechny <= tol, ale ne všechny < -tol, měl by být ponechán?
-    #     # Pokud jsou všechny < -tol, zahodit.
-    #     # Pokud jsou některé mezi [-tol, tol] a zbytek < -tol, ponechat.
-    #     # Pokud jsou všechny <= tol, ponechat.
-    #     # Zkusme se držet Julia cíle: ponechat část >= 0.
-    #     if all(s -> s < -tol, node_sdf) # Všechny striktně záporné (vně)
-    #          return Vector{Vector{Int64}}() # Zahodit
-    #     else # Alespoň jeden je >= -tol (na hranici nebo uvnitř) a žádný není > tol
-    #          return [tet] # Ponechat
-    #     end
-    # end
-    # Jednodušší kontrola na začátku:
     if all(s -> s < -tol, node_sdf) # Všechny striktně záporné (vně)
         return Vector{Vector{Int64}}() # Zahodit
     end
     if all(s -> s >= -tol, node_sdf) # Všechny nezáporné (uvnitř nebo na hranici)
+        # Ponechat původní tet, ale zkontrolovat jeho orientaci pro jistotu
+        # (I když by původní tety měly být v pořádku)
+        # fix_tetrahedron_orientation!(mesh, tet) # Volitelné zde
         return [tet] # Ponechat
     end
     # Nyní víme, že tet protíná hranici (některé < -tol, některé >= -tol)
 
     # --- Obecný případ: Tetraedr protíná izoplochu ---
 
-    # Vytvořit páry (SDF hodnota, původní index) pro třídění
     vert_data = [(node_sdf[i], node_indices[i]) for i in 1:4]
-
-    # Třídit vrcholy: VZESTUPNĚ podle SDF, remízy řešit vzestupným indexem.
-    # Nejnižší (nejvíce vně) SDF bude první.
-    # Implementace třídící sítě pro sledování `flipped` (jako v C++)
-    # p0, p1, p2, p3 jsou indexy do vert_data (0-based pro snazší přepis)
-    p = [1, 2, 3, 4] # Indexy do vert_data (1-based v Julii)
+    p = [1, 2, 3, 4]
     flipped = false
-
-    # Funkce pro porovnání (SDF, index)
     less_than(idx1, idx2) = (vert_data[idx1][1] < vert_data[idx2][1]) || (vert_data[idx1][1] == vert_data[idx2][1] && vert_data[idx1][2] < vert_data[idx2][2])
 
-    # Třídící síť (přizpůsobená pro vzestupné třídění)
     if less_than(p[2], p[1]) p[1], p[2] = p[2], p[1]; flipped = !flipped end
     if less_than(p[4], p[3]) p[3], p[4] = p[4], p[3]; flipped = !flipped end
     if less_than(p[3], p[1]) p[1], p[3] = p[3], p[1]; flipped = !flipped end
     if less_than(p[4], p[2]) p[2], p[4] = p[4], p[2]; flipped = !flipped end
     if less_than(p[3], p[2]) p[2], p[3] = p[3], p[2]; flipped = !flipped end
 
-    # Extrahovat seřazené indexy a jejich SDF hodnoty
-    # s, r, q, p kde sdf_s <= sdf_r <= sdf_q <= sdf_p
     s_idx, r_idx, q_idx, p_idx = [vert_data[pi][2] for pi in p]
     sdf_s, sdf_r, sdf_q, sdf_p = [vert_data[pi][1] for pi in p]
 
-    # --- Analýza případů podle znamének SDF ---
-    # Použijeme přímé porovnání s tolerancí, abychom přesněji odpovídali C++
     is_s_neg = sdf_s < -tol
     is_r_neg = sdf_r < -tol
     is_q_neg = sdf_q < -tol
-    is_p_neg = sdf_p < -tol # Mělo by být false, protože případ NNNN byl odfiltrován
+    # is_p_neg = sdf_p < -tol # Mělo by být false
 
-    is_s_pos = sdf_s > tol
-    is_r_pos = sdf_r > tol
+    is_p_pos = sdf_p > tol
     is_q_pos = sdf_q > tol
-    is_p_pos = sdf_p > tol # Měl by být true, protože případ NNNN byl odfiltrován
+    is_r_pos = sdf_r > tol
+    is_s_pos = sdf_s > tol # Mělo by být false
 
     is_s_zero = abs(sdf_s) <= tol
     is_r_zero = abs(sdf_r) <= tol
@@ -237,207 +262,158 @@ function apply_stencil_trim_spikes!(
 
     new_tets = Vector{Vector{Int64}}()
 
-    # Přemapování na C++ logiku (kde p,q,r,s jsou seřazeny sestupně, p je nejkladnější)
-    # Julia: s <= r <= q <= p (vzestupně)
-    # C++:   p >= q >= r >= s (sestupně)
-    # C++ `vphi[s] < 0` => Julia `sdf_s < -tol` (NNNN - zahozeno)
-    # C++ `vphi[s] == 0` => Julia `is_s_zero` (a ostatní >= 0) => `+++0` (C++) => Zahodit tet
-    # C++ `vphi[r] > 0` => Julia `sdf_r > tol` (a `sdf_s < -tol`) => `+++-` (C++) => Julia `NNNP`
-    # C++ `vphi[q] < 0` => Julia `sdf_q < -tol` (a `sdf_p > tol`) => `+---` (C++) => Julia `NPPP`
-    # C++ `vphi[q] > 0 && vphi[r] < 0` => Julia `sdf_q > tol` a `sdf_r < -tol` => `++--` (C++) => Julia `NNPP`
-    # C++ `vphi[q] == 0 && vphi[r] == 0` => Julia `is_q_zero` a `is_r_zero` (a `sdf_s < -tol`, `sdf_p > tol`) => `+00-` (C++) => Julia `NZZP`
-    # C++ `vphi[q] == 0` (a `vphi[r] < -tol`) => Julia `is_q_zero` a `sdf_r < -tol` (a `sdf_p > tol`) => `+0--` (C++) => Julia `NNZP`
-    # C++ `vphi[r] == 0` (a `vphi[q] > tol`) => Julia `is_r_zero` a `sdf_q > tol` (a `sdf_s < -tol`) => `++0-` (C++) => Julia `NZZP` ? Ne, `NZPP`.
+    # --- Helper function to add tet with orientation check ---
+    function add_tet!(t::Vector{Int})
+        # Check for duplicate nodes within the tet before fixing orientation
+        if length(Set(t)) != 4
+             @warn "Degenerate tetrahedron generated (duplicate nodes): $t. Skipping."
+             return
+        end
+        fix_tetrahedron_orientation!(mesh, t)
+        # Optional: Add a final check after fixing
+        if !check_tetrahedron_orientation(mesh, t)
+             @warn "Tetrahedron $t still has incorrect/zero orientation after fix attempt. Skipping."
+             return
+        end
+        push!(new_tets, t)
+    end
 
-    # --- Implementace případů podle C++ logiky ---
+    # --- Implementace případů podle C++ logiky s opravou orientace ---
 
-    if is_s_zero && !is_r_neg && !is_q_neg && !is_p_neg # Ekvivalent C++ +++0 (všechny >= 0, nejnižší je 0)
-        # Zkontrolovat centroid pro případ ZZZZ
+    if is_s_zero && !is_r_neg && !is_q_neg && !is_p_neg # Ekvivalent C++ +++0
+        # Zpracování ZZZZ a ostatních případů jako předtím
         if is_r_zero && is_q_zero && is_p_zero # ZZZZ
              centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
              if eval_sdf(mesh, centroid) < -tol # Centroid je vně
-                  return Vector{Vector{Int64}}() # Zahodit vnější povrchový tetraedr
+                  return Vector{Vector{Int64}}()
              else
-                  # Měli bychom ho ponechat? C++ `remove_exterior_tets` ho zahazuje, pokud je centroid > 0.
-                  # Zdá se, že cílem je zahodit *všechny* tety ležící PŘESNĚ na povrchu.
-                  return Vector{Vector{Int64}}() # Zahodit
+                  return Vector{Vector{Int64}}() # Zahodit povrchové tety
              end
-        else # Případy ZPPP, ZZPP, ZZZP - odpovídá C++ +++0
-            # Zahodit tetraedr, který leží na hranici z vnější strany
-             return Vector{Vector{Int64}}()
+        else # ZPPP, ZZPP, ZZZP
+             return Vector{Vector{Int64}}() # Zahodit
         end
 
     elseif is_s_neg && is_r_neg && is_q_neg && (is_p_pos || is_p_zero) # NNNP / NNNZ (Ekvivalent C++ +++-)
-        # p_idx je uvnitř/na hranici, s_idx, r_idx, q_idx jsou vně
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         qp = cut_edge!(q_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        # C++: (ps, qs, rs, s) nebo (qs, ps, rs, s) [flipped]
-        # Julia: p_idx odpovídá C++ s (záporný), {s,r,q}_idx odpovídá C++ {p,q,r} (kladné)
-        #        sp, rp, qp odpovídá C++ ps, qs, rs
-        # Nový tet: [sp, rp, qp, p_idx]
         if flipped
-            push!(new_tets, [rp, sp, qp, p_idx]) # C++ (qs, ps, rs, s) -> Julia (rp, sp, qp, p_idx)
+            add_tet!([rp, sp, qp, p_idx])
         else
-            push!(new_tets, [sp, rp, qp, p_idx]) # C++ (ps, qs, rs, s) -> Julia (sp, rp, qp, p_idx)
+            add_tet!([sp, rp, qp, p_idx])
         end
 
-    elseif is_s_neg && (is_r_pos || is_r_zero) # NPPP / NPZZ / NPZP / NPPZ (Ekvivalent C++ +---)
-        # s_idx je vně, r_idx, q_idx, p_idx jsou uvnitř/na hranici
-        sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map)
-        sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
-        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        # C++: (pq, q, r, s), (pq, r, pr, s), (pq, s, pr, ps) nebo flipped
-        # Julia: s_idx odpovídá C++ p (kladný), {r,q,p}_idx odpovídá C++ {q,r,s} (záporné)
-        #        sr, sq, sp odpovídá C++ pq, pr, ps
-        # Tet 1: [r_idx, q_idx, p_idx, sr] (základna r,q,p)
-        # Tet 2: [q_idx, p_idx, sr, sq] (základna q,p,sr)
-        # Tet 3: [p_idx, sr, sq, sp] (základna p,sr,sq)
-        # Překlad C++ tetů do Julia indexů:
-        # C++ (pq, q, r, s) -> Julia (sr, r_idx, q_idx, p_idx) ? Ne, to není správně.
-        # C++ p je kladný vrchol, q,r,s záporné. pq, pr, ps jsou řezy.
-        # C++ tety: (pq,q,r,s), (pq,r,pr,s), (pq,s,pr,ps)
-        # Julia s je záporný, r,q,p kladné. sr, sq, sp jsou řezy.
-        # Chceme část obsahující r,q,p. Trojúhelník řezu je sr,sq,sp.
-        # Tet 1: (r, q, p, sr) - základna r,q,p; vrchol sr
-        # Tet 2: (q, p, sr, sq) - základna q,p,sr; vrchol sq
-        # Tet 3: (p, sr, sq, sp) - základna p,sr,sq; vrchol sp
-        if flipped
-            # Nutno prohodit druhé dva indexy v každém tetu pro zachování orientace
-            push!(new_tets, [q_idx, r_idx, p_idx, sr]) # Tet 1 flipped
-            push!(new_tets, [p_idx, q_idx, sr, sq]) # Tet 2 flipped
-            push!(new_tets, [sr, p_idx, sq, sp]) # Tet 3 flipped
+    elseif is_s_neg && (is_p_pos || is_p_zero) && (is_q_pos || is_q_zero) && (is_r_pos || is_r_zero) # NPPP / NPZZ / atd. (Ekvivalent C++ +---)
+        # Tento případ by měl být is_s_neg a ostatní >= -tol
+        # Kontrola: !(is_r_neg || is_q_neg || is_p_neg)
+        if !is_r_neg && !is_q_neg # Potvrzení, že r, q, p jsou >= -tol
+            sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map)
+            sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
+            sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+            # Tři tetraedry tvořící vnitřní část
+            if flipped
+                add_tet!([q_idx, r_idx, p_idx, sr])
+                add_tet!([p_idx, q_idx, sr, sq])
+                add_tet!([sr, p_idx, sq, sp])
+            else
+                add_tet!([r_idx, q_idx, p_idx, sr])
+                add_tet!([q_idx, p_idx, sr, sq])
+                add_tet!([p_idx, sr, sq, sp])
+            end
         else
-            push!(new_tets, [r_idx, q_idx, p_idx, sr]) # Tet 1
-            push!(new_tets, [q_idx, p_idx, sr, sq]) # Tet 2
-            push!(new_tets, [p_idx, sr, sq, sp]) # Tet 3
+             @warn "Logická chyba v NPPP větvi: r=$sdf_r, q=$sdf_q, p=$sdf_p"
+             return Vector{Vector{Int64}}()
         end
 
 
-    elseif is_s_neg && is_r_neg && (is_q_pos || is_q_zero) # NNPP / NNZP / NNPZ / NNZZ (Ekvivalent C++ ++--)
-        # s_idx, r_idx jsou vně, q_idx, p_idx jsou uvnitř/na hranici
+    elseif is_s_neg && is_r_neg && (is_q_pos || is_q_zero) && (is_p_pos || is_p_zero) # NNPP / NNZP / NNPZ / NNZZ (Ekvivalent C++ ++--)
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rq = cut_edge!(r_idx, q_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        # C++: (pr, qr, r, s), (pr, qs, qr, s), (pr, ps, qs, s) nebo flipped
-        # Julia: s,r odpovídá C++ p,q (kladné), q,p odpovídá C++ r,s (záporné)
-        #        sq, sp, rq, rp odpovídá C++ pr, ps, qr, qs
-        # Chceme část obsahující q_idx, p_idx. Čtyřúhelník řezu: sq, sp, rp, rq.
-        # Triangulace C++:
-        # Tet 1: (pr, qr, r, s) -> (sq, rq, q_idx, p_idx) ? Ne.
-        # C++ p,q kladné; r,s záporné. Řezy pr, ps, qr, qs.
-        # Tet 1: (pr, qr, r, s)
-        # Tet 2: (pr, qs, qr, s)
-        # Tet 3: (pr, ps, qs, s)
-        # Julia s,r záporné; q,p kladné. Řezy sq, sp, rq, rp.
-        # Chceme část s q, p.
-        # Tet 1: (q, p, rq, rp) - základna q,p,rq; vrchol rp
-        # Tet 2: (q, rp, sq, sp) - základna q,rp,sq; vrchol sp ? Ne.
-        # Tet 2: (q, p, rp, sp) - základna q,p,rp; vrchol sp ? Ne.
-        # Tet 2: (q, p, sp, sq) - základna q,p,sp; vrchol sq ? Ne.
-        # Zkusme triangulovat čtyřúhelník řezu (sq, sp, rp, rq) úhlopříčkou sp-rq.
-        # Tet 1: (q, p, rq, sp) # Základna q,p,rq
-        # Tet 2: (q, sp, rq, sq) # Základna q,sp,rq
-        # Tet 3: (p, sp, rp, rq) # Základna p,sp,rp
-        # Porovnání s C++ tety (překlad indexů):
-        # C++ Tet 1: (pr, qr, r, s) -> Julia (sq, rq, q, p)
-        # C++ Tet 2: (pr, qs, qr, s) -> Julia (sq, sp, rq, p)
-        # C++ Tet 3: (pr, ps, qs, s) -> Julia (sq, rp, sp, p)
-        # Zdá se, že C++ triangulace je jiná. Použijme ji.
-    # TODO: upravit popis podle Implementace níže
-        if flipped
-            # Prohodit druhé dva indexy
-            push!(new_tets, [p_idx, rq, q_idx, sq]) # Tet 1 flipped
-            push!(new_tets, [p_idx, sp, sq, rp])    # Tet 2 flipped
-            push!(new_tets, [p_idx, rp, sq, rq])    # Tet 3 flipped
-        else
-            # Původní pořadí
-            push!(new_tets, [p_idx, q_idx, rq, sq]) # Tet 1
-            push!(new_tets, [p_idx, sq, sp, rp])    # Tet 2
-            push!(new_tets, [p_idx, sq, rp, rq])    # Tet 3
-        end
-    # --- Zpracování případů s nulami, které nebyly pokryty výše ---
-    # Tyto případy by měly odpovídat C++ ++0-, +00-, +0--
+        # Šest tetraedrů tvořících vnitřní část (triangulace čtyřstěnu)
+        # Použijeme C++ triangulaci (přeloženou) a opravíme orientaci
+        # C++ Tety: (pr, qr, r, s), (pr, qs, qr, s), (pr, ps, qs, s)
+        # Julia překlad (s,r záporné; q,p kladné):
+        # Tet 1: (sq, rq, q, p) ? Ne, to jsou 4 kladné/nulové body.
+        # Tet 1: (q, p, rq, rp)
+        # Tet 2: (q, p, rp, sp) ? Ne.
+        # Tet 2: (q, p, sp, sq) ? Ne.
+        # Tet 3: (q, rq, rp, sp) ? Ne.
+        # Tet 3: (q, rq, sp, sq) ? Ne.
+        # Zkusme triangulaci s vrcholy q, p a řezy sq, sp, rq, rp
+        # Tvoříme tety s vrcholy q a p.
+        # Tet 1: (q, p, rq, rp) # Společná stěna q-p-rq
+        # Tet 2: (q, p, rp, sp) # Společná stěna q-p-rp
+        # Tet 3: (q, p, sp, sq) # Společná stěna q-p-sp
+        # Toto dává 3 tety. C++ má 3 tety. Zkusme to.
+        # C++ (pr, qr, r, s) -> (sq, rq, q_idx, p_idx) ? Ne.
+        # C++ (pr, qs, qr, s) -> (sq, sp, rq, p_idx) ? Ne.
+        # C++ (pr, ps, qs, s) -> (sq, rp, sp, p_idx) ? Ne.
 
-    elseif is_s_neg && is_r_zero && (is_q_pos || is_q_zero) # NZPP / NZPZ / NZZP / NZZZ (Ekvivalent C++ ++0-)
-        # s_idx je vně, r_idx je na hranici, q_idx, p_idx jsou uvnitř/na hranici
-        # C++: ++0- (p,q > 0; r = 0; s < 0). Řezy ps, qs. Tet (ps, qs, r, s)
-        # Julia: s < 0; r = 0; q,p >= 0. Řezy sp, sq. Tet (sp, sq, r_idx, p_idx) ?
-        # Překlad C++: ps -> sp, qs -> sq, r -> r_idx, s -> p_idx ? Ne.
-        # C++ p,q kladné; r=0; s záporné.
-        # Julia s záporné; r=0; q,p kladné.
-        # C++ (ps, qs, r, s) -> Julia (sp, sq, r_idx, p_idx) ? Ne.
-        # C++ s je záporný vrchol -> Julia p_idx
-        # C++ r je nulový vrchol -> Julia r_idx
-        # C++ p,q jsou kladné -> Julia q_idx, s_idx ? Ne, s_idx je záporný. q_idx, p_idx.
-        # C++ ps, qs -> Julia řezy s kladnými: sq, sp.
-        # C++ (ps, qs, r, s) -> Julia (sp, sq, r_idx, p_idx) ? Stále divné.
-        # Zkusme logicky: Chceme část s r,q,p. Řezy jsou sp, sq. Základna r,q,p.
-        # Tet (sp, sq, r_idx, p_idx) ? Ne.
-        # Tet (r_idx, q_idx, p_idx, sp) ? Ne.
-        # Tet (r_idx, q_idx, p_idx, sq) ? Ne.
-        # Tet (q_idx, p_idx, r_idx, sq) ?
-        # Tet (q_idx, p_idx, r_idx, sp) ?
-        # C++ tet (ps, qs, r, s) má základnu (ps, qs, r) a vrchol s.
-        # Julia ekvivalent: základna (sp, sq, r_idx), vrchol p_idx?
+        # Použijeme C++ triangulaci z kódu (i když se zdá divná) a opravíme
+        if flipped
+            add_tet!([p_idx, rq, q_idx, sq]) # Tet 1 flipped
+            add_tet!([p_idx, sp, sq, rp])    # Tet 2 flipped
+            add_tet!([p_idx, rp, sq, rq])    # Tet 3 flipped
+        else
+            add_tet!([p_idx, q_idx, rq, sq]) # Tet 1
+            add_tet!([p_idx, sq, sp, rp])    # Tet 2
+            add_tet!([p_idx, sq, rp, rq])    # Tet 3
+        end
+
+    # --- Zpracování případů s nulami ---
+
+    elseif is_s_neg && is_r_zero && (is_q_pos || is_q_zero) && (is_p_pos || is_p_zero) # NZPP / NZPZ / NZZP / NZZZ (Ekvivalent C++ ++0-)
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
+        # C++ Tet: (ps, qs, r, s) -> Julia (sp, sq, r_idx, p_idx)? Ne.
+        # Logika: Vnitřní část má vrcholy r, q, p a řezy sp, sq.
+        # Tvoříme tety s vrcholy r, q, p.
+        # Tet 1: (r_idx, q_idx, p_idx, sq)
+        # Tet 2: (r_idx, p_idx, sq, sp)
         if flipped
-            push!(new_tets, [sq, sp, r_idx, p_idx]) # C++ (qs, ps, r, s)
+             add_tet!([q_idx, r_idx, p_idx, sq]) # Tet 1 flipped?
+             add_tet!([p_idx, r_idx, sq, sp]) # Tet 2 flipped?
         else
-            push!(new_tets, [sp, sq, r_idx, p_idx]) # C++ (ps, qs, r, s)
+             add_tet!([r_idx, q_idx, p_idx, sq]) # Tet 1
+             add_tet!([r_idx, p_idx, sq, sp]) # Tet 2
         end
 
 
     elseif is_s_neg && is_r_neg && is_q_zero && (is_p_pos || is_p_zero) # NNZP / NNZZ (Ekvivalent C++ +0--)
-        # s,r jsou vně, q je na hranici, p je uvnitř/na hranici
-        # C++: +0-- (p > 0; q = 0; r,s < 0). Řezy pr, ps. Tets (pr, q, r, s), (ps, q, pr, s)
-        # Julia: s,r < 0; q = 0; p >= 0. Řezy sp, rp.
-        # C++ (pr, q, r, s) -> Julia (rp, q_idx, r_idx, p_idx) ? Ne.
-        # C++ (ps, q, pr, s) -> Julia (sp, q_idx, rp, p_idx) ? Ne.
-        # Logika: Chceme část s q,p. Řezy sp, rp.
-        # Tet 1: (q_idx, p_idx, rp, r_idx) ?
-        # Tet 2: (q_idx, p_idx, sp, rp) ?
-        # Překlad C++:
-        # Tet 1: (pr, q, r, s) -> (rp, q_idx, r_idx, s_idx) ?
-        # Tet 2: (ps, q, pr, s) -> (sp, q_idx, rp, s_idx) ?
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        # C++ Tets: (pr, q, r, s), (ps, q, pr, s)
+        # Julia překlad: (rp, q_idx, r_idx, s_idx), (sp, q_idx, rp, s_idx) ? Ne.
+        # Logika: Vnitřní část má vrcholy q, p a řezy sp, rp.
+        # Tet 1: (q_idx, p_idx, rp, sp)
         if flipped
-            # Prohodit druhé dva indexy
-            push!(new_tets, [q_idx, rp, r_idx, s_idx]) # Tet 1 flipped
-            push!(new_tets, [q_idx, sp, rp, s_idx]) # Tet 2 flipped
+             add_tet!([p_idx, q_idx, rp, sp]) # Tet 1 flipped?
         else
-            push!(new_tets, [rp, q_idx, r_idx, s_idx]) # Tet 1
-            push!(new_tets, [sp, q_idx, rp, s_idx]) # Tet 2
+             add_tet!([q_idx, p_idx, rp, sp]) # Tet 1
         end
 
+
     elseif is_s_neg && is_r_zero && is_q_zero && (is_p_pos || is_p_zero) # NZZP / NZZZ (Ekvivalent C++ +00-)
-        # s je vně, r,q jsou na hranici, p je uvnitř/na hranici
-        # C++: +00- (p > 0; q=0, r=0; s < 0). Řez ps. Tet (ps, q, r, s)
-        # Julia: s < 0; r=0, q=0; p >= 0. Řez sp.
-        # C++ (ps, q, r, s) -> Julia (sp, q_idx, r_idx, s_idx) ?
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        # C++ Tet: (ps, q, r, s) -> Julia (sp, q_idx, r_idx, s_idx)? Ne.
+        # Logika: Vnitřní část má vrcholy r, q, p a řez sp.
+        # Tet 1: (r_idx, q_idx, p_idx, sp)
         if flipped
-            push!(new_tets, [q_idx, sp, r_idx, s_idx]) # C++ (ps, q, r, s) -> prohozeno q, sp
+             add_tet!([q_idx, r_idx, p_idx, sp]) # Tet 1 flipped?
         else
-            push!(new_tets, [sp, q_idx, r_idx, s_idx]) # C++ (ps, q, r, s)
+             add_tet!([r_idx, q_idx, p_idx, sp]) # Tet 1
         end
 
     else
-        # Neočekávaný vzor - může nastat, pokud `cut_edge` selže nebo tolerance způsobí problémy.
-        # Nebo pokud případ NNNN/PPPP nebyl správně odfiltrován na začátku.
         @warn "Neočekávaný vzor SDF v apply_stencil_trim_spikes! Po třídění: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p. Indices: s=$s_idx, r=$r_idx, q=$q_idx, p=$p_idx. Tet: $tet. Flipped: $flipped"
-        # Rozhodnutí: zahodit nebo ponechat? Bezpečnější je zahodit.
-        return Vector{Vector{Int64}}()
+        return Vector{Vector{Int64}}() # Zahodit neočekávaný případ
     end
-
-    # Volitelné: Zkontrolovat a opravit orientaci nových tetraedrů
-    # V C++ kódu se orientace řeší pomocí `flipped`. Měli bychom to zde také udělat.
-    # Kontrola orientace by měla být provedena po všech řezech.
 
     return new_tets
 end
 
-# (Zachovejte ostatní funkce jako process_cell_A15!, process_cell_Schlafli!, atd.)
+# --- Zbytek kódu (slice_ambiguous_tetrahedra!, cut_edge!, atd.) zůstává ---
+# Nezapomeňte zahrnout definice check_tetrahedron_orientation a fix_tetrahedron_orientation!
+# a také definici BlockMesh a souvisejících struktur/funkcí.
