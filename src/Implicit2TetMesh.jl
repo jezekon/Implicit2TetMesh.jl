@@ -1,5 +1,7 @@
 module Implicit2TetMesh
 
+using JLD2
+
 # Core data structure and SDF operations:
 include("Fundamentals/Fundamentals.jl")
 using .Fundamentals
@@ -21,6 +23,6 @@ include("Utils/Utils.jl")
 using .Utils
 
 # Export types and functions from submodules
-export PlaneDefinition
+export PlaneDefinition, MeshGenerationOptions, generate_tetrahedral_mesh
 
 end # module Implicit2TetMesh
