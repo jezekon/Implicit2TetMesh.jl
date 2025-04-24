@@ -22,6 +22,9 @@ using .Modification
 include("Utils/Utils.jl")
 using .Utils
 
+# Add this line to include TetMeshGenerator.jl
+include("TetMeshGenerator.jl")
+
 # Export types and functions from submodules
 export PlaneDefinition, MeshGenerationOptions, generate_tetrahedral_mesh
 
