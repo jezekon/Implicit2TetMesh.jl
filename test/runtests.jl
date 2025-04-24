@@ -11,7 +11,7 @@ using Implicit2TetMesh.Utils
 @testset "Implicit2TetMesh.jl" begin
 
   RUN_beam = false
-  RUN_main = true
+  RUN_main = false
   RUN_main_param = true
 
   if RUN_beam
@@ -93,14 +93,15 @@ using Implicit2TetMesh.Utils
         PlaneDefinition([1.0, 0.0, 0.0], [60.0, 2.0, 2.0], Square(5.0))]
     
     options=MeshGenerationOptions(
-            scheme = "Schlafli",
-            warp_param = 0.5,
+            scheme = "A15",
+            # warp_param = 0.,
+            optimize = true,
             plane_definitions = plane_definitions)
 
     mesh = generate_tetrahedral_mesh(
         "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-1_Interpolation.jld2",
         "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-1_Interpolation.jld2",
         "cantilever_beam_interp_cut",
-        options)
+        options=options)
   end
 end
