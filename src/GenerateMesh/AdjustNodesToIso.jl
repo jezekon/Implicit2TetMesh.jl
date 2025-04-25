@@ -46,6 +46,33 @@ function interpolate_zero(p1::SVector{3,Float64}, p2::SVector{3,Float64},
     end
 end
 
+function apply_stencil(mesh::BlockMesh, tet::Vector{Int64})
+  f = [ mesh.node_sdf[i] for i in tet ]
+  np = count(x -> x > (0), f)
+  if np > 0
+    return [ tet ]
+  else
+    return Vector{Vector{Int64}}()  # All negative - skip this tetrahedron
+  end
+end
+
+# Function that traverses all tetrahedra in connectivity and applies complete stencils
+function remove_exterior_tetrahedra!(mesh::BlockMesh)
+  new_IEN = Vector{Vector{Int64}}()
+  for tet in mesh.IEN
+    # new_tets = apply_complete_stencil(mesh, tet)
+    new_tets = apply_stencil(mesh, tet)
+    for nt in new_tets
+      t_sdf = [mesh.node_sdf[i] for i in nt]
+      if any(x -> x >= 0, t_sdf)
+        push!(new_IEN, nt)
+      end
+    end
+  end
+  mesh.IEN = new_IEN
+  @info "After complete tetrahedral cutting: $(length(mesh.IEN)) tetrahedra"
+end
+
 """
     remove_nodes_outside_isocontour!(mesh::BlockMesh, tol::Float64=mesh.grid_tol)
 
@@ -391,7 +418,7 @@ function adjust_nodes_to_isosurface!(mesh::BlockMesh)
   @info "Node warping complete. $nodes_moved nodes were moved to the isosurface. $nodes_skipped nodes were skipped to prevent element inversion."
  
   # Remove nodes outside the isocontour and elements that contain them
-  remove_nodes_outside_isocontour!(mesh)
+  # remove_nodes_outside_isocontour!(mesh)
 
   # Remove any inverted elements (with negative Jacobian determinant)
   remove_inverted_elements!(mesh)
