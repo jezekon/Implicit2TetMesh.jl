@@ -8,26 +8,34 @@ Configuration options for tetrahedral mesh generation.
 - `warp_param::Float64`: Parameter controlling warping behavior (default: 0.3)
 - `plane_definitions::Union{Vector{PlaneDefinition}, Nothing}`: Optional cutting planes (default: nothing)
 - `optimize::Bool`: Whether to perform mesh optimization (default: true)
+- `split_elements::Bool`: Whether to split elements along the isosurface (true) or just move nodes to the isosurface (false) (default: true)
 """
 struct MeshGenerationOptions
     scheme::String
     warp_param::Float64
     plane_definitions::Union{Vector{PlaneDefinition}, Nothing}
     optimize::Bool
+    split_elements::Bool
     
     # Inner constructor with defaults
     function MeshGenerationOptions(;
         scheme::String = "A15",
         warp_param::Float64 = 0.3,
         plane_definitions::Union{Vector{PlaneDefinition}, Nothing} = nothing,
-        optimize::Bool = true
+        optimize::Bool = true,
+        split_elements::Bool = true
     )
         # Validate scheme selection
         if !(scheme in ["A15", "Schlafli"])
             error("Invalid scheme: $scheme. Must be 'A15' or 'Schlafli'")
         end
+
+        # Validate warp_param to be non-negative (kladný nebo nulový)
+        if warp_param < 0.0
+            error("Invalid warp_param: $warp_param. Must be non-negative (>= 0).")
+        end
         
-        new(scheme, warp_param, plane_definitions, optimize)
+        new(scheme, warp_param, plane_definitions, optimize, split_elements)
     end
 end
 
@@ -86,11 +94,16 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     @info "Updating mesh connectivity..."
     update_connectivity!(mesh)
     
-    # Step 6: Slice ambiguous tetrahedra to accurately represent the isosurface
-    @info "Slicing ambiguous tetrahedra..."
-    slice_ambiguous_tetrahedra!(mesh)
+    # Step 6: Process the isosurface boundary using the selected method
+    if options.split_elements
+        @info "Slicing ambiguous tetrahedra (with element splitting)..."
+        slice_ambiguous_tetrahedra!(mesh)
+    else
+        @info "Adjusting nodes to isosurface (without element splitting)..."
+        adjust_nodes_to_isosurface!(mesh)
+    end
     
-    # Step 7: Update mesh connectivity again after slicing
+    # Step 7: Update mesh connectivity again after isosurface processing
     @info "Updating mesh connectivity..."
     update_connectivity!(mesh)
     
@@ -110,7 +123,7 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     export_mesh_vtk(mesh, output_file)
     
     # Step 11: Apply cutting planes if defined
-    if options.plane_definitions !== nothing
+    if options.plane_definitions !== nothing && options.warp_param !== 0.
         @info "Applying cutting planes with warp_param = $(options.warp_param)..."
         warp_mesh_by_planes_sdf!(mesh, options.plane_definitions, options.warp_param)
         
