@@ -14,6 +14,7 @@ using Implicit2TetMesh.Fundamentals
 include("Schemes/A15Scheme.jl")
 include("Schemes/SchlafliScheme.jl")
 include("TetGenerator.jl")
+include("AdjustNodesToIso.jl")
 include("Stencils.jl")
 include("ExportMesh.jl")
 
