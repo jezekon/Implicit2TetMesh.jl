@@ -100,7 +100,7 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
         slice_ambiguous_tetrahedra!(mesh)
     else
         @info "Adjusting nodes to isosurface (without element splitting)..."
-        remove_exterior_tetrahedra(mesh)
+        remove_exterior_tetrahedra!(mesh)
         update_connectivity!(mesh)
         adjust_nodes_to_isosurface!(mesh)
     end
