@@ -94,8 +94,9 @@ using Implicit2TetMesh.Utils
     
     options=MeshGenerationOptions(
             scheme = "A15",
-            # warp_param = 0.,
-            optimize = true,
+            optimize = false,
+            split_elements = true,
+            warp_param = 0.,
             plane_definitions = plane_definitions)
 
     mesh = generate_tetrahedral_mesh(
