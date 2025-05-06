@@ -98,6 +98,7 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     if options.split_elements
         @info "Slicing ambiguous tetrahedra (with element splitting)..."
         slice_ambiguous_tetrahedra!(mesh)
+        fix_tetrahedra_orientation!(mesh)
     else
         @info "Adjusting nodes to isosurface (without element splitting)..."
         remove_exterior_tetrahedra!(mesh)
@@ -139,6 +140,8 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
         export_mesh_vtk(mesh, cut_output_file)
     end
     
+        update_connectivity!(mesh)
+        fix_tetrahedra_orientation!(mesh)
     return mesh
 end
 

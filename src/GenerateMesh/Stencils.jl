@@ -375,3 +375,103 @@ function apply_stencil_trim_spikes!(
 
     return new_tets
 end
+
+"""
+    fix_tetrahedra_orientation!(mesh::BlockMesh)
+
+Checks and fixes the orientation of all tetrahedral elements in the mesh
+by ensuring each element has a positive Jacobian determinant (positive volume).
+Elements with negative determinants are fixed by reordering their nodes.
+
+# Arguments
+- `mesh::BlockMesh`: The mesh to check and fix
+- `tol::Float64`: Tolerance for considering volume as zero (default: 1e-12)
+
+# Returns
+- Number of elements that were fixed
+"""
+function fix_tetrahedra_orientation!(mesh::BlockMesh, tol::Float64=1e-12)
+    fixed_count = 0
+    degenerate_count = 0
+    failed_count = 0
+    
+    @info "Checking and fixing tetrahedra orientation..."
+    
+    for (elem_idx, tet) in enumerate(mesh.IEN)
+        # Skip elements with duplicate nodes
+        if length(Set(tet)) != 4
+            degenerate_count += 1
+            continue
+        end
+        
+        # Get vertices of the tetrahedron
+        vertices = [mesh.X[node_idx] for node_idx in tet]
+        
+        # Calculate edge vectors from first vertex
+        a = vertices[2] - vertices[1]
+        b = vertices[3] - vertices[1]
+        c = vertices[4] - vertices[1]
+        
+        # Calculate Jacobian determinant (6 times the volume)
+        det_value = dot(a, cross(b, c))
+        
+        # Check if element has negative or zero volume
+        if det_value <= tol
+            # Try to fix by swapping nodes 3 and 4
+            mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] = mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3]
+            
+            # Check if the fix worked
+            vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
+            a = vertices[2] - vertices[1]
+            b = vertices[3] - vertices[1]
+            c = vertices[4] - vertices[1]
+            new_det = dot(a, cross(b, c))
+            
+            if new_det > tol
+                fixed_count += 1
+            else
+                # If that didn't work, try swapping nodes 1 and 2
+                mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] = mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3] # Restore
+                mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] = mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1]
+                
+                # Check again
+                vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
+                a = vertices[2] - vertices[1]
+                b = vertices[3] - vertices[1]
+                c = vertices[4] - vertices[1]
+                new_det = dot(a, cross(b, c))
+                
+                if new_det > tol
+                    fixed_count += 1
+                else
+                    # Restore and try one more swap
+                    mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] = mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1] # Restore
+                    mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][3] = mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][2]
+                    
+                    vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
+                    a = vertices[2] - vertices[1]
+                    b = vertices[3] - vertices[1]
+                    c = vertices[4] - vertices[1]
+                    new_det = dot(a, cross(b, c))
+                    
+                    if new_det > tol
+                        fixed_count += 1
+                    else
+                        failed_count += 1
+                    end
+                end
+            end
+        end
+    end
+    
+    if degenerate_count > 0
+        @warn "Found $degenerate_count elements with duplicate nodes"
+    end
+    
+    if failed_count > 0
+        @warn "Failed to fix orientation of $failed_count elements"
+    end
+    
+    @info "Fixed orientation of $fixed_count tetrahedra"
+    return fixed_count
+end
