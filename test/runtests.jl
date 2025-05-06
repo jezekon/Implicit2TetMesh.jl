@@ -94,7 +94,7 @@ using Implicit2TetMesh.Utils
     
     options=MeshGenerationOptions(
             scheme = "A15",
-            optimize = false,
+            optimize = true,
             split_elements = true,
             warp_param = 0.,
             plane_definitions = plane_definitions)
@@ -104,5 +104,7 @@ using Implicit2TetMesh.Utils
         "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-1_Interpolation.jld2",
         "cantilever_beam_interp_cut",
         options=options)
+
+    # assess_mesh_quality(mesh, "mesh_quality")
   end
 end
