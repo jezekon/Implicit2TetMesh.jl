@@ -63,7 +63,7 @@ function slice_mesh_with_plane!(mesh::BlockMesh, plane::String, position::Float6
     
     # Export mesh if requested
     if export_file !== nothing
-        export_mesh_vtk(mesh, export_file)
+        export_mesh_vtu(mesh, export_file)
         @info "Exported sliced mesh to $(export_file)"
     end
     

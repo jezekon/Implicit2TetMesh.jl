@@ -123,7 +123,7 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     # Step 10: Export the initial mesh to VTK format
     output_file = "$(output_prefix)_TriMesh-$(options.scheme).vtu"
     @info "Exporting mesh to $output_file..."
-    export_mesh_vtk(mesh, output_file)
+    export_mesh_vtu(mesh, output_file)
     
     # Step 11: Apply cutting planes if defined
     if options.plane_definitions !== nothing && options.warp_param !== 0.
@@ -137,7 +137,7 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
         # Export the cut mesh to VTK
         cut_output_file = "$(output_prefix)_TriMesh-$(options.scheme)_cut.vtu"
         @info "Exporting cut mesh to $cut_output_file..."
-        export_mesh_vtk(mesh, cut_output_file)
+        export_mesh_vtu(mesh, cut_output_file)
     end
     
         update_connectivity!(mesh)

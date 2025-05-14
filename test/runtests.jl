@@ -54,7 +54,7 @@ using Implicit2TetMesh.Utils
 
       update_connectivity!(mesh)
 
-      export_mesh_vtk(mesh, "$(taskName)_TriMesh-notOPT_$(scheme).vtu")
+      export_mesh_vtu(mesh, "$(taskName)_TriMesh-notOPT_$(scheme).vtu")
 
       # slice_mesh_with_plane!(mesh, "x", 0.6, export_file="sliced_mesh_notOPT.vtu")
 
@@ -69,12 +69,12 @@ using Implicit2TetMesh.Utils
        if !isempty(plane_definitions)
          warp_mesh_by_planes_sdf!(mesh, plane_definitions, warp_param)
          update_connectivity!(mesh)
-         export_mesh_vtk(mesh, "$(taskName)_TriMesh-$(scheme)_cut.vtu")
+         export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme)_cut.vtu")# -> kladný jacob
        end
 
       TetMesh_volumes(mesh)
 
-      export_mesh_vtk(mesh, "$(taskName)_TriMesh-$(scheme)_plane.vtu")
+      export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme)_plane.vtu")
       # slice_mesh_with_plane!(mesh, "x", 0.6, export_file="sliced_mesh_OPT.vtu")
       # assess_mesh_quality(mesh, "mesh_quality")
   end
