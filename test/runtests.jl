@@ -63,7 +63,9 @@ using Implicit2TetMesh.Utils
       TetMesh_volumes(mesh)
       optimize_mesh!(mesh)
       #
-      export_mesh_vtk(mesh, "$(taskName)_TriMesh-$(scheme).vtu")
+      remove_inverted_elements!(mesh)
+      export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme).vtu")
+      export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-$(scheme)_quality.vtu")
 
        # Apply cutting planes only if they are defined
        if !isempty(plane_definitions)
