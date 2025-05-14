@@ -125,118 +125,137 @@ end
 """
     remove_inverted_elements!(mesh::BlockMesh)
 
-Removes tetrahedral elements with negative Jacobian determinants (negative volumes)
-from the mesh. These inverted elements can occur during the warping process 
-when nodes are adjusted to fit the isosurface.
+Improves mesh quality by fixing inverted tetrahedra and removing degenerate elements.
 
-# Arguments
-- `mesh::BlockMesh`: The mesh to be cleaned
+This function:
+1. Attempts to fix elements with negative Jacobian determinant (inverted elements)
+   by reordering their vertices to achieve positive orientation
+2. Removes elements with near-zero volume (degenerate elements)
+3. Updates mesh connectivity to remove orphaned nodes
+4. Rebuilds the inverse node-to-element connectivity (INE)
 
-# Returns
-- `mesh::BlockMesh`: The modified mesh with inverted elements removed
-
-# Note
-This function should be called before updating the mesh connectivity to ensure
-that all inverted elements are properly removed from the mesh.
+Returns the modified mesh.
 """
 function remove_inverted_elements!(mesh::BlockMesh)
-    # Set default tolerance if not provided
-    # if volume_tolerance === nothing
-        volume_tolerance = mesh.grid_tol * 1e-6
-    # end
+    # Set tolerance for identifying near-zero volumes
+    volume_tolerance = mesh.grid_tol * 1e-6
     
-    # Pre-allocate output for better performance
+    # Track statistics for reporting
+    original_element_count = length(mesh.IEN)
+    original_node_count = length(mesh.X)
+    fixed_elements = 0
+    failed_fixes = 0
+    zero_volume_elements = 0
+    
+    # Process elements: fix inverted elements, remove near-zero volume elements
     valid_elements = Vector{Vector{Int}}()
     sizehint!(valid_elements, length(mesh.IEN))
     
-    # Track problematic elements for reporting
-    negative_elements = Tuple{Int,Float64}[]
-    zero_elements = Tuple{Int,Float64}[]
-    
     for (elem_idx, tet) in enumerate(mesh.IEN)
-        # Get vertices of the tetrahedron as static vectors for better performance
+        # Skip degenerate elements with duplicate vertices
+        if length(Set(tet)) != 4
+            zero_volume_elements += 1
+            continue
+        end
+        
+        # Calculate determinant (proportional to signed volume)
         vertices = SVector{4,SVector{3,Float64}}(
             mesh.X[tet[1]], mesh.X[tet[2]], mesh.X[tet[3]], mesh.X[tet[4]]
         )
-        
-        # Calculate volume using cross product method
         a = vertices[2] - vertices[1]
         b = vertices[3] - vertices[1]
         c = vertices[4] - vertices[1]
-        
-        # Calculate determinant (6 times the volume)
         det_value = dot(a, cross(b, c))
         
-        # Actual volume
-        volume = det_value / 6.0
+        # Remove elements with near-zero volume
+        if abs(det_value) <= volume_tolerance
+            zero_volume_elements += 1
+            continue
+        end
         
-        # Categorize element based on volume
+        # Fix elements with negative determinant
         if det_value < 0
-            # Negative volume (inverted element)
-            push!(negative_elements, (elem_idx, volume))
-        elseif abs(det_value) <= volume_tolerance
-            # Near-zero volume (degenerate element)
-            push!(zero_elements, (elem_idx, volume))
+            # Strategy 1: Swap vertices 3 and 4
+            tet_copy = copy(tet)
+            tet_copy[3], tet_copy[4] = tet_copy[4], tet_copy[3]
+            
+            # Check if fix worked
+            new_vertices = SVector{4,SVector{3,Float64}}(
+                mesh.X[tet_copy[1]], mesh.X[tet_copy[2]], 
+                mesh.X[tet_copy[3]], mesh.X[tet_copy[4]]
+            )
+            new_a = new_vertices[2] - new_vertices[1]
+            new_b = new_vertices[3] - new_vertices[1]
+            new_c = new_vertices[4] - new_vertices[1]
+            new_det = dot(new_a, cross(new_b, new_c))
+            
+            if new_det > volume_tolerance
+                # Fix successful - element has positive volume and is not near-zero
+                push!(valid_elements, tet_copy)
+                fixed_elements += 1
+                continue
+            end
+            
+            # Strategy 2: Swap vertices 1 and 2
+            tet_copy = copy(tet)
+            tet_copy[1], tet_copy[2] = tet_copy[2], tet_copy[1]
+            
+            new_vertices = SVector{4,SVector{3,Float64}}(
+                mesh.X[tet_copy[1]], mesh.X[tet_copy[2]], 
+                mesh.X[tet_copy[3]], mesh.X[tet_copy[4]]
+            )
+            new_a = new_vertices[2] - new_vertices[1]
+            new_b = new_vertices[3] - new_vertices[1]
+            new_c = new_vertices[4] - new_vertices[1]
+            new_det = dot(new_a, cross(new_b, new_c))
+            
+            if new_det > volume_tolerance
+                push!(valid_elements, tet_copy)
+                fixed_elements += 1
+                continue
+            end
+            
+            # Strategy 3: Swap vertices 2 and 3
+            tet_copy = copy(tet)
+            tet_copy[2], tet_copy[3] = tet_copy[3], tet_copy[2]
+            
+            new_vertices = SVector{4,SVector{3,Float64}}(
+                mesh.X[tet_copy[1]], mesh.X[tet_copy[2]], 
+                mesh.X[tet_copy[3]], mesh.X[tet_copy[4]]
+            )
+            new_a = new_vertices[2] - new_vertices[1]
+            new_b = new_vertices[3] - new_vertices[1]
+            new_c = new_vertices[4] - new_vertices[1]
+            new_det = dot(new_a, cross(new_b, new_c))
+            
+            if new_det > volume_tolerance
+                push!(valid_elements, tet_copy)
+                fixed_elements += 1
+                continue
+            end
+            
+            # All fix attempts failed
+            failed_fixes += 1
         else
-            # Valid element with positive volume
+            # Element already has positive determinant
             push!(valid_elements, tet)
         end
     end
     
-    # Sort problematic elements by volume for reporting
-    sort!(negative_elements, by=x->x[2])
-    sort!(zero_elements, by=x->abs(x[2]))
-    
-    # Get total count of removed elements
-    negative_count = length(negative_elements)
-    zero_count = length(zero_elements)
-    total_removed = negative_count + zero_count
-    
-    # Report problematic elements if any were found
-    if total_removed > 0
-        @info "Removing $total_removed problematic elements from the mesh ($negative_count negative, $zero_count zero-volume)."
-        
-        # Report negative elements
-        if !isempty(negative_elements)
-            println("⚠️  REMOVING NEGATIVE VOLUME ELEMENTS ⚠️")
-            println("+------------+------------------------+")
-            println("| Element ID | Volume                 |")
-            println("+------------+------------------------+")
-            
-            # Show up to 5 most negative elements
-            for (i, (elem_id, volume)) in enumerate(negative_elements[1:min(5, length(negative_elements))])
-                println(@sprintf("| %-10d | %-22.6e |", elem_id, volume))
-            end
-            
-            if length(negative_elements) > 5
-                println("| ... and $(length(negative_elements) - 5) more negative volume elements")
-            end
-            println("+------------+------------------------+")
-        end
-        
-        # Report zero volume elements
-        if !isempty(zero_elements)
-            println("⚠️  REMOVING ZERO VOLUME ELEMENTS ⚠️")
-            println("+------------+------------------------+")
-            println("| Element ID | Volume                 |")
-            println("+------------+------------------------+")
-            
-            # Show up to 5 elements with smallest absolute volume
-            for (i, (elem_id, volume)) in enumerate(zero_elements[1:min(5, length(zero_elements))])
-                println(@sprintf("| %-10d | %-22.6e |", elem_id, volume))
-            end
-            
-            if length(zero_elements) > 5
-                println("| ... and $(length(zero_elements) - 5) more zero volume elements")
-            end
-            println("+------------+------------------------+")
-        end
-    else
-        @info "No problematic elements found in the mesh."
-    end
-    
-    # Update mesh connectivity
+    # Update connectivity
     mesh.IEN = valid_elements
+    
+    # Report statistics before connectivity update
+    @info "Fixed orientation of $fixed_elements inverted elements"
+    @info "Failed to fix orientation of $failed_fixes elements"
+    @info "Removing $zero_volume_elements elements with near-zero volume"
+    
+    # Update connectivity to remove orphaned nodes and rebuild INE
+    update_connectivity!(mesh)
+    
+    # Final report
+    @info "Final mesh: $(length(mesh.IEN)) elements, $(length(mesh.X)) nodes"
+    @info "Removed $(original_element_count - length(mesh.IEN)) elements and $(original_node_count - length(mesh.X)) orphaned nodes"
     
     return mesh
 end
