@@ -117,7 +117,7 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     # Step 9: Optimize the mesh if requested
     if options.optimize
         @info "Optimizing mesh..."
-        optimize_mesh!(mesh)
+        optimize_mesh!(mesh, options.scheme)
     end
     
     # Step 10: Export the initial mesh to VTK format
