@@ -334,7 +334,7 @@ end
 # ----------------------------
 # Surface-preserving optimization
 # ----------------------------
-function optimize_surface_nodes!(mesh::BlockMesh; max_iterations::Int=10, 
+function optimize_surface_nodes!(mesh::BlockMesh, scheme::String; max_iterations::Int=10, 
                                damping_factor::Float64=0.3, tolerance::Float64=1e-6)
     @info "Starting surface node optimization..."
     
@@ -412,10 +412,15 @@ function optimize_surface_nodes!(mesh::BlockMesh; max_iterations::Int=10,
             end
             
             # Apply the move
-            mesh.X[node_idx] = new_position
-            
+            if scheme == "A15"
+              warp_param = 0.15 * mesh.grid_step
+            elseif scheme =="Schlafli"
+              warp_param = 0.3 * mesh.grid_step
+            else
+              @warn "Unknown scheme"
+            end
             # Project back onto the isosurface using the SDF
-            warp_node_to_isocontour!(mesh, node_idx, 5)  # Use fewer iterations here
+            warp_node_to_isocontour!(mesh, node_idx, warp_param, 10)  # Use fewer iterations here
             
             # Count the node as moved
             max_displacement = max(max_displacement, displacement)
@@ -438,7 +443,8 @@ end
 # ----------------------------
 # Complete mesh optimization pipeline
 # ----------------------------
-function optimize_mesh!(mesh::BlockMesh; 
+function optimize_mesh!(mesh::BlockMesh,
+                        scheme::String; 
                                interior_iterations::Int=20, 
                                surface_iterations::Int=10,
                                adaptive_iterations::Int=15,
@@ -449,7 +455,7 @@ function optimize_mesh!(mesh::BlockMesh;
     laplacian_smooth!(mesh, max_iterations=interior_iterations, damping_factor=damping_factor)
     
     # Then optimize the surface nodes while preserving the isosurface
-    optimize_surface_nodes!(mesh, max_iterations=surface_iterations, damping_factor=damping_factor*0.6)
+    optimize_surface_nodes!(mesh, scheme, max_iterations=surface_iterations, damping_factor=damping_factor*0.6)
     
     # Finally, apply adaptive optimization with quality-based damping
     optimize_mesh_adaptive!(mesh, max_iterations=adaptive_iterations, initial_damping=damping_factor)
