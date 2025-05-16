@@ -10,9 +10,9 @@ using Implicit2TetMesh.Utils
 
 @testset "Implicit2TetMesh.jl" begin
 
-  RUN_beam = true
+  RUN_beam = false
   RUN_main = false
-  RUN_main_param = false
+  RUN_main_param = true
 
   if RUN_beam
 
@@ -30,8 +30,8 @@ using Implicit2TetMesh.Utils
       # @load "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-2_Interpolation.jld2" fine_grid
       # @load "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-2_Interpolation.jld2" fine_sdf
  
-      # scheme = "A15"
-      scheme = "Schlafli"
+      scheme = "A15"
+      # scheme = "Schlafli"
       
       # Definice rovin
       plane_definitions = [
@@ -73,7 +73,7 @@ using Implicit2TetMesh.Utils
  
       slice_mesh_with_plane!(mesh, "x", 0.6)
       export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme)_plane.vtu")
-      assess_mesh_quality(mesh, "mesh_quality")
+      # assess_mesh_quality(mesh, "mesh_quality")
   end
 
   if RUN_main
@@ -92,7 +92,8 @@ using Implicit2TetMesh.Utils
     options=MeshGenerationOptions(
             scheme = "A15",
             optimize = true,
-            split_elements = true,
+            split_elements = false,
+            quality_export = true,
             warp_param = 0.,
             plane_definitions = plane_definitions)
 
