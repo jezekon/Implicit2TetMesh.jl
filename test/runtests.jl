@@ -30,14 +30,14 @@ using Implicit2TetMesh.Utils
       # @load "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-2_Interpolation.jld2" fine_grid
       # @load "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-2_Interpolation.jld2" fine_sdf
  
-      scheme = "A15"
-      # scheme = "Schlafli"
+      # scheme = "A15"
+      scheme = "Schlafli"
       
       # Definice rovin
-      # plane_definitions = [
-      #   PlaneDefinition([-1.0, 0.0, 0.0], [0.0, 10.0, 0.0], Square(30.)),
-      #   PlaneDefinition([1.0, 0.0, 0.0], [60.0, 2.0, 2.0], Square(5.))
-      # ]
+      plane_definitions = [
+        PlaneDefinition([-1.0, 0.0, 0.0], [0.0, 10.0, 0.0], Square(30.)),
+        PlaneDefinition([1.0, 0.0, 0.0], [60.0, 2.0, 2.0], Square(5.))
+      ]
       warp_param = 0.3
 
       mesh = BlockMesh(fine_sdf, fine_grid)
@@ -46,43 +46,34 @@ using Implicit2TetMesh.Utils
       generate_mesh!(mesh, scheme)
 
       warp!(mesh, scheme) # Warp nearest nodes to the isocontour
-      count_negative_determinants(mesh)
-      export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-step_warp$(scheme).vtu")
+      # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-step_warp$(scheme).vtu")
 
+      slice_ambiguous_tetrahedra!(mesh) # Remove elements outside the body
+      # adjust_nodes_to_isosurface!(mesh) # Simple cut of elements to follow the isocontour
+ 
+      update_connectivity!(mesh)
 
-      # update_connectivity!(mesh) # Update mesh topology
-      #
-      # slice_ambiguous_tetrahedra!(mesh) # Remove elements outside the body
-      #
-      # update_connectivity!(mesh)
-      #
-      # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-notOPT_$(scheme).vtu")
-      #
-      # # slice_mesh_with_plane!(mesh, "x", 0.6, export_file="sliced_mesh_notOPT.vtu")
-      #
-      # # adjust_nodes_to_isosurface!(mesh) # Simple cut of elements to follow the isocontour
-      # #
-      # TetMesh_volumes(mesh)
-      # remove_inverted_elements!(mesh)
-      # optimize_mesh!(mesh, scheme)
-      # #
-      # remove_inverted_elements!(mesh)
-      # export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme).vtu")
-      #
-      #  # Apply cutting planes only if they are defined
-      #  # if !isempty(plane_definitions)
-      #  #   warp_mesh_by_planes_sdf!(mesh, plane_definitions, warp_param)
-      #  #   update_connectivity!(mesh)
-      #  #   export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme)_cut.vtu")
-      #  # end
-      #
-      # TetMesh_volumes(mesh)
-      #
-      # export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme)_plane.vtu")
-      # slice_mesh_with_plane!(mesh, "x", 0.6)
-      # # update_connectivity!(mesh)
-      # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-$(scheme)_quality.vtu")
-      # # assess_mesh_quality(mesh, "mesh_quality")
+      export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-notOPT_$(scheme).vtu")
+
+      TetMesh_volumes(mesh)
+
+      remove_inverted_elements!(mesh)
+      update_connectivity!(mesh)
+      optimize_mesh!(mesh, scheme)
+      export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme).vtu")
+
+      # Apply cutting planes only if they are defined
+      if !isempty(plane_definitions)
+        warp_mesh_by_planes_sdf!(mesh, plane_definitions, warp_param)
+        update_connectivity!(mesh)
+        export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme)_cut.vtu")
+      end
+
+      TetMesh_volumes(mesh)
+ 
+      slice_mesh_with_plane!(mesh, "x", 0.6)
+      export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme)_plane.vtu")
+      assess_mesh_quality(mesh, "mesh_quality")
   end
 
   if RUN_main
