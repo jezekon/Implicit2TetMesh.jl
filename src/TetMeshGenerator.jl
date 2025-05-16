@@ -74,6 +74,31 @@ options = MeshGenerationOptions(
 mesh = generate_tetrahedral_mesh("grid_data.jld2", "sdf_data.jld2", "beam_cut", options=options)
 """
 
+"""
+    export_mesh(mesh::BlockMesh, filename::String; quality_export::Bool=false)
+
+Export a tetrahedral mesh to VTK format with flexible quality metrics inclusion.
+
+# Arguments
+- `mesh::BlockMesh`: The mesh to export
+- `filename::String`: Output filename (including path)
+- `quality_export::Bool=false`: When true, includes detailed quality metrics in the export
+
+# Returns
+- Returns the result of the underlying export function (typically nothing)
+
+This function provides a unified interface to both the basic and quality-enhanced
+mesh export functionality, selecting the appropriate implementation based on the
+`quality_export` parameter.
+"""
+function export_mesh(mesh::BlockMesh, filename::String, quality_export::Bool)
+    # Select the appropriate export function based on the quality_export flag
+    export_func = quality_export ? export_mesh_vtu_quality : export_mesh_vtu
+    
+    # Call the selected function with the provided arguments
+    return export_func(mesh, filename)
+end
+
 function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_prefix::String = "output";
     options::MeshGenerationOptions = MeshGenerationOptions())
     # Step 1: Load data from JLD2 files
@@ -88,7 +113,7 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     generate_mesh!(mesh, options.scheme)
     
     # Step 4: Warp nodes to the isocontour (zero level set of SDF)
-    warp!(mesh)
+    warp!(mesh, options.scheme)
     
     # Step 5: Update mesh connectivity (cleanup nodes, merge duplicates)
     update_connectivity!(mesh)
@@ -96,7 +121,6 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     # Step 6: Process the isosurface boundary using the selected method
     if options.split_elements
         slice_ambiguous_tetrahedra!(mesh)
-        remove_inverted_elements!(mesh)
     else
         remove_exterior_tetrahedra!(mesh)
         update_connectivity!(mesh)
@@ -105,6 +129,7 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     
     # Step 7: Update mesh connectivity again after isosurface processing
     update_connectivity!(mesh)
+    remove_inverted_elements!(mesh)
     
     # Step 8: Compute and display tetrahedra volume information
     @info "Computing mesh volumes..."
@@ -118,11 +143,7 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     # Step 10: Export the initial mesh to VTK format
     output_file = "$(output_prefix)_TriMesh-$(options.scheme).vtu"
     @info "Exporting mesh to $output_file..."
-    if options.quality_export == false
-        export_mesh_vtu(mesh, output_file)
-    else
-        export_mesh_vtu_quality(mesh, output_file)
-    end
+    export_mesh(mesh, output_file, options.quality_export)
     
     # Step 11: Apply cutting planes if defined
     if options.plane_definitions !== nothing && options.warp_param !== 0.
@@ -136,7 +157,7 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
         # Export the cut mesh to VTK
         cut_output_file = "$(output_prefix)_TriMesh-$(options.scheme)_cut.vtu"
         @info "Exporting cut mesh to $cut_output_file..."
-        export_mesh_vtu(mesh, cut_output_file)
+        export_mesh(mesh, cut_output_file, options.quality_export)
     end
     
     return mesh
