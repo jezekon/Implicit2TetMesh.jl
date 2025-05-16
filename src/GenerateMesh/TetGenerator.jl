@@ -161,6 +161,8 @@ end
 # Merge duplicate nodes after mesh generation (unchanged logic, only type annotations updated)
 # ----------------------------
 function merge_duplicate_nodes!(mesh::BlockMesh)
+  @info "Merging duplicate nodes"
+  println("  Before merging duplicates: $(length(mesh.X)) nodes")
   tol = mesh.grid_tol*10^4
   new_nodes = Vector{SVector{3,Float64}}()
   new_node_sdf = Vector{Float64}()
@@ -185,14 +187,15 @@ function merge_duplicate_nodes!(mesh::BlockMesh)
   mesh.X = new_nodes
   mesh.node_sdf = new_node_sdf
   mesh.node_map = node_map
-  @info "After merging duplicates: $(length(mesh.X)) nodes"
+  println("  After merging duplicates:  $(length(mesh.X)) nodes")
 end
 
 # ----------------------------
 # Cleanup unused nodes and reindex connectivity (unchanged logic)
 # ----------------------------
 function cleanup_unused_nodes!(mesh::BlockMesh)
-  @info "Number of nodes before cleanup: $(length(mesh.X))"
+  @info "Cleaning unused nodes"
+  println("  Number of nodes before cleanup: $(length(mesh.X))")
   used_nodes = Set{Int64}()
   @inbounds for element in mesh.IEN
     union!(used_nodes, element)
@@ -212,7 +215,7 @@ function cleanup_unused_nodes!(mesh::BlockMesh)
   mesh.X = new_coords
   mesh.node_sdf = new_node_sdf
   mesh.node_map = new_node_map
-  @info "Number of nodes after cleanup: $(length(mesh.X))"
+  println("  Number of nodes after cleanup:  $(length(mesh.X))")
 end
 
 # ----------------------------
@@ -238,6 +241,8 @@ function generate_mesh!(mesh::BlockMesh, scheme::String)
   empty!(mesh.node_map)
   empty!(mesh.cell_center_map)
   empty!(mesh.node_hash)
+
+  @info "Generating mesh with $(scheme) scheme..."
 
   @inbounds for i in 1:mesh.nx-1
     for j in 1:mesh.ny-1
@@ -321,16 +326,17 @@ end
 # is calculated as threshold_sdf = 0.5 * (length of the longest tetrahedral edge).
 function warp!(mesh::BlockMesh, scheme::String, max_iter::Int=160)
   # Calculate the longest edge and then the threshold for displacement
+  @info "Warping nodes to isocontour..."
   max_edge = longest_edge(mesh)
   if scheme == "A15"
     threshold_sdf = 0.15 * mesh.grid_step
   elseif scheme =="Schlafli"
     threshold_sdf = 0.3 * mesh.grid_step
   else
-    @warn "Unknown scheme"
+    @error "Unknown scheme"
   end
 
-  @info "Warping: max edge = $max_edge, threshold_sdf = $threshold_sdf"
+  println("  max edge length = $(round(max_edge, sigdigits=4)) , threshold sdf for warp = $threshold_sdf")
   # First pass: nodes with positive SDF value (inside)
   for i in 1:length(mesh.X)
     sdf = mesh.node_sdf[i]
@@ -345,15 +351,14 @@ function warp!(mesh::BlockMesh, scheme::String, max_iter::Int=160)
       warp_node_to_isocontour!(mesh, i, threshold_sdf, max_iter)
     end
   end
+  #TODO:Warp only one node from element wich is close to boundary (now it warps every node which is close enough)
 end
 
 # ---------------------------------------------------
 # Function: Update mesh topology (mesh.X, mesh.IEN, mesh.INE)
 # ---------------------------------------------------
 function update_connectivity!(mesh::BlockMesh)
-  @info "Updating mesh topology: cleanup, merging duplicates and creating inverse connectivity..."
   cleanup_unused_nodes!(mesh)        # Recalculates mesh.X, mesh.node_sdf and reindexes mesh.IEN and mesh.node_map
   merge_duplicate_nodes!(mesh)       # Merges duplicate nodes and adjusts connectivity in mesh.IEN
   create_INE!(mesh)                  # Creates inverse connectivity (mesh.INE)
-  @info "Topology update completed: $(length(mesh.X)) nodes, $(length(mesh.IEN)) tetrahedra."
 end

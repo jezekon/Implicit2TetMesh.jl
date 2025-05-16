@@ -7,6 +7,7 @@ Configuration options for tetrahedral mesh generation.
 - `scheme::String`: Discretization scheme, either "A15" or "Schlafli" (default: "A15")
 - `warp_param::Float64`: Parameter controlling warping behavior (default: 0.3)
 - `plane_definitions::Union{Vector{PlaneDefinition}, Nothing}`: Optional cutting planes (default: nothing)
+- `quality_export::Bool`: Whether to export mesh with quality metrics (default: false)
 - `optimize::Bool`: Whether to perform mesh optimization (default: true)
 - `split_elements::Bool`: Whether to split elements along the isosurface (true) or just move nodes to the isosurface (false) (default: true)
 """
@@ -14,6 +15,7 @@ struct MeshGenerationOptions
     scheme::String
     warp_param::Float64
     plane_definitions::Union{Vector{PlaneDefinition}, Nothing}
+    quality_export::Bool
     optimize::Bool
     split_elements::Bool
     
@@ -22,6 +24,7 @@ struct MeshGenerationOptions
         scheme::String = "A15",
         warp_param::Float64 = 0.3,
         plane_definitions::Union{Vector{PlaneDefinition}, Nothing} = nothing,
+        quality_export::Bool = false,
         optimize::Bool = true,
         split_elements::Bool = true
     )
@@ -35,7 +38,7 @@ struct MeshGenerationOptions
             error("Invalid warp_param: $warp_param. Must be non-negative (>= 0).")
         end
         
-        new(scheme, warp_param, plane_definitions, optimize, split_elements)
+        new(scheme, warp_param, plane_definitions, quality_export, optimize, split_elements)
     end
 end
 
@@ -79,35 +82,28 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     @load sdf_file fine_sdf
     
     # Step 2: Create the BlockMesh from the loaded data
-    @info "Creating BlockMesh structure..."
     mesh = BlockMesh(fine_sdf, fine_grid)
     
     # Step 3: Generate mesh with the chosen discretization scheme
-    @info "Generating mesh with $(options.scheme) scheme..."
     generate_mesh!(mesh, options.scheme)
     
     # Step 4: Warp nodes to the isocontour (zero level set of SDF)
-    @info "Warping nodes to isocontour..."
     warp!(mesh)
     
     # Step 5: Update mesh connectivity (cleanup nodes, merge duplicates)
-    @info "Updating mesh connectivity..."
     update_connectivity!(mesh)
     
     # Step 6: Process the isosurface boundary using the selected method
     if options.split_elements
-        @info "Slicing ambiguous tetrahedra (with element splitting)..."
         slice_ambiguous_tetrahedra!(mesh)
-        fix_tetrahedra_orientation!(mesh)
+        remove_inverted_elements!(mesh)
     else
-        @info "Adjusting nodes to isosurface (without element splitting)..."
         remove_exterior_tetrahedra!(mesh)
         update_connectivity!(mesh)
         adjust_nodes_to_isosurface!(mesh)
     end
     
     # Step 7: Update mesh connectivity again after isosurface processing
-    @info "Updating mesh connectivity..."
     update_connectivity!(mesh)
     
     # Step 8: Compute and display tetrahedra volume information
@@ -116,14 +112,17 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     
     # Step 9: Optimize the mesh if requested
     if options.optimize
-        @info "Optimizing mesh..."
         optimize_mesh!(mesh, options.scheme)
     end
     
     # Step 10: Export the initial mesh to VTK format
     output_file = "$(output_prefix)_TriMesh-$(options.scheme).vtu"
     @info "Exporting mesh to $output_file..."
-    export_mesh_vtu(mesh, output_file)
+    if options.quality_export == false
+        export_mesh_vtu(mesh, output_file)
+    else
+        export_mesh_vtu_quality(mesh, output_file)
+    end
     
     # Step 11: Apply cutting planes if defined
     if options.plane_definitions !== nothing && options.warp_param !== 0.
@@ -140,8 +139,6 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
         export_mesh_vtu(mesh, cut_output_file)
     end
     
-        update_connectivity!(mesh)
-        fix_tetrahedra_orientation!(mesh)
     return mesh
 end
 

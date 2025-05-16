@@ -9,7 +9,7 @@ Identifies elements crossing the boundary and replaces them with smaller
 tetrahedra that accurately represent the surface.
 """
 function slice_ambiguous_tetrahedra!(mesh::BlockMesh)
-    @info "Slicing tetrahedra using trim_spikes logic..."
+    @info "Slicing tetrahedra using trim_spikes logic (with element splitting)..."
     new_IEN = Vector{Vector{Int64}}()
     sizehint!(new_IEN, length(mesh.IEN)) # Pre-allocate for performance
 
@@ -34,12 +34,9 @@ function slice_ambiguous_tetrahedra!(mesh::BlockMesh)
     end
 
     mesh.IEN = new_IEN # Update mesh connectivity
-    new_node_count = length(mesh.X)
     new_tet_count = length(mesh.IEN)
 
-    @info "After trim_spikes slicing: $(new_tet_count) tetrahedra (added $(new_tet_count - original_tet_count)), $(new_node_count) nodes (added $(new_node_count - original_node_count))"
-
-    # Note: After slicing, update_connectivity!(mesh) should be called externally
+    println("  After trim_spikes slicing: $(new_tet_count) tetrahedra (removed $(original_tet_count - new_tet_count))")
 end
 
 """

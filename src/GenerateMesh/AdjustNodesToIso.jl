@@ -1,3 +1,7 @@
+const RED = "\e[31m"
+const BOLD = "\e[1m"
+const RESET = "\e[0m"
+
 # ----------------------------
 # Helper function: Linear interpolation of the intersection with the zero level of SDF
 # ----------------------------
@@ -137,12 +141,11 @@ This function:
 Returns the modified mesh.
 """
 function remove_inverted_elements!(mesh::BlockMesh)
+    @info "Fixing elements orientation..."
     # Set tolerance for identifying near-zero volumes
     volume_tolerance = mesh.grid_tol * 1e-6
     
     # Track statistics for reporting
-    original_element_count = length(mesh.IEN)
-    original_node_count = length(mesh.X)
     fixed_elements = 0
     failed_fixes = 0
     zero_volume_elements = 0
@@ -246,24 +249,19 @@ function remove_inverted_elements!(mesh::BlockMesh)
     mesh.IEN = valid_elements
     
     # Report statistics before connectivity update
-    @info "Fixed orientation of $fixed_elements inverted elements"
-    @info "Failed to fix orientation of $failed_fixes elements"
-    @info "Removing $zero_volume_elements elements with near-zero volume"
-    
-    # Update connectivity to remove orphaned nodes and rebuild INE
-    update_connectivity!(mesh)
-    
-    # Final report
-    @info "Final mesh: $(length(mesh.IEN)) elements, $(length(mesh.X)) nodes"
-    @info "Removed $(original_element_count - length(mesh.IEN)) elements and $(original_node_count - length(mesh.X)) orphaned nodes"
-    
+    println("  Fixed orientation of $fixed_elements inverted elements")
+    if failed_fixes != 0
+      println("  Failed to fix orientation of $(RED)$(BOLD)$(failed_fixes)$(RESET) elements")
+    end
+    println("  Removing $zero_volume_elements elements with near-zero volume")
+   
     return mesh
 end
 
 
 # Function to warp nodes onto the isosurface based on element connectivity
 function adjust_nodes_to_isosurface!(mesh::BlockMesh)
-  @info "Starting node warping to isosurface..."
+  @info "Adjusting tetrahedra nodes to isosurface (without element splitting)..."
   
   # Track nodes that have been processed to avoid duplicating work
   processed_nodes = Set{Int}()

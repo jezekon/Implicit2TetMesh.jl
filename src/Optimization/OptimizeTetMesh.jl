@@ -161,7 +161,7 @@ function laplacian_smooth!(mesh::BlockMesh; max_iterations::Int=20, damping_fact
             nodes_moved += 1
         end
         
-        @info "Iteration $iter: Max displacement = $max_displacement, Nodes moved = $nodes_moved"
+        println("  Iteration $iter: Max displacement = $max_displacement, Nodes moved = $nodes_moved")
         
         # Check for convergence
         if max_displacement < tolerance || nodes_moved == 0
@@ -169,8 +169,6 @@ function laplacian_smooth!(mesh::BlockMesh; max_iterations::Int=20, damping_fact
             break
         end
     end
-    
-    @info "Laplacian smoothing completed"
 end
 
 # ----------------------------
@@ -196,7 +194,7 @@ function optimize_mesh_adaptive!(mesh::BlockMesh; max_iterations::Int=20,
     initial_min_quality = minimum(element_qualities)
     initial_avg_quality = sum(element_qualities) / length(element_qualities)
     
-    @info "Initial mesh quality: Min = $initial_min_quality, Avg = $initial_avg_quality"
+    println("  Initial mesh quality: Min = $initial_min_quality, Avg = $initial_avg_quality")
     
     # For each iteration
     for iter in 1:max_iterations
@@ -308,7 +306,7 @@ function optimize_mesh_adaptive!(mesh::BlockMesh; max_iterations::Int=20,
         end
         
         # Check for convergence
-        @info "Iteration $iter: Max displacement = $max_displacement, Nodes moved = $nodes_moved"
+        println("  Iteration $iter: Max displacement = $max_displacement, Nodes moved = $nodes_moved")
         
         if max_displacement < tolerance || nodes_moved == 0
             @info "Optimization converged after $iter iterations"
@@ -322,11 +320,8 @@ function optimize_mesh_adaptive!(mesh::BlockMesh; max_iterations::Int=20,
     final_avg_quality = sum(final_qualities) / length(final_qualities)
     quality_improvement = (final_avg_quality - initial_avg_quality) / initial_avg_quality * 100
     
-    @info "Mesh optimization complete. Quality improvement: $quality_improvement%"
-    @info "Final mesh quality: Min = $final_min_quality, Avg = $final_avg_quality"
-    
-    # Update connectivity 
-    update_connectivity!(mesh)
+    println("  Mesh optimization complete. Quality improvement: $quality_improvement%")
+    println("  Final mesh quality: Min = $final_min_quality, Avg = $final_avg_quality")
     
     return mesh
 end
@@ -346,7 +341,7 @@ function optimize_surface_nodes!(mesh::BlockMesh, scheme::String; max_iterations
         end
     end
     
-    @info "Found $(length(surface_nodes)) surface nodes to optimize"
+    println("  Found $(length(surface_nodes)) surface nodes to optimize")
     
     # For each iteration
     for iter in 1:max_iterations
@@ -427,7 +422,7 @@ function optimize_surface_nodes!(mesh::BlockMesh, scheme::String; max_iterations
             nodes_moved += 1
         end
         
-        @info "Surface optimization iteration $iter: Max displacement = $max_displacement, Nodes moved = $nodes_moved"
+        println("  Iteration $iter: Max displacement = $max_displacement, Nodes moved = $nodes_moved")
         
         # Check for convergence
         if max_displacement < tolerance || nodes_moved == 0
@@ -436,7 +431,6 @@ function optimize_surface_nodes!(mesh::BlockMesh, scheme::String; max_iterations
         end
     end
     
-    @info "Surface node optimization complete"
     return mesh
 end
 
@@ -449,6 +443,7 @@ function optimize_mesh!(mesh::BlockMesh,
                                surface_iterations::Int=10,
                                adaptive_iterations::Int=15,
                                damping_factor::Float64=0.5)
+    println()
     @info "Starting complete mesh optimization..."
     
     # First optimize the interior with standard Laplacian smoothing
@@ -460,22 +455,18 @@ function optimize_mesh!(mesh::BlockMesh,
     # Finally, apply adaptive optimization with quality-based damping
     optimize_mesh_adaptive!(mesh, max_iterations=adaptive_iterations, initial_damping=damping_factor)
     
-    # Final connectivity update
-    update_connectivity!(mesh)
-    
     # Calculate and report final mesh quality
-    quality_stats = [compute_element_quality(mesh, i) for i in 1:length(mesh.IEN)]
-    min_quality = minimum(quality_stats)
-    max_quality = maximum(quality_stats)
-    avg_quality = sum(quality_stats) / length(quality_stats)
-    med_quality = sort(quality_stats)[div(length(quality_stats),2)]
+    # quality_stats = [compute_element_quality(mesh, i) for i in 1:length(mesh.IEN)]
+    # min_quality = minimum(quality_stats)
+    # max_quality = maximum(quality_stats)
+    # avg_quality = sum(quality_stats) / length(quality_stats)
+    # med_quality = sort(quality_stats)[div(length(quality_stats),2)]
     
-    @info "Complete mesh optimization finished."
-    @info "Final mesh quality statistics:"
-    @info "  Min quality: $min_quality"
-    @info "  Median quality: $med_quality"
-    @info "  Avg quality: $avg_quality"
-    @info "  Max quality: $max_quality"
+    # @info "Final mesh quality statistics:"
+    # @info "  Min quality: $min_quality"
+    # @info "  Median quality: $med_quality"
+    # @info "  Avg quality: $avg_quality"
+    # @info "  Max quality: $max_quality"
     
     return mesh
 end
