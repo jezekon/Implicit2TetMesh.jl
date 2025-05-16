@@ -247,7 +247,8 @@ function remove_inverted_elements!(mesh::BlockMesh)
     
     # Update connectivity
     mesh.IEN = valid_elements
-    
+    create_INE!(mesh)                  # Creates inverse connectivity (mesh.INE)
+
     # Report statistics before connectivity update
     println("  Fixed orientation of $fixed_elements inverted elements")
     if failed_fixes != 0
