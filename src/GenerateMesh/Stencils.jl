@@ -1,430 +1,474 @@
-# ----------------------------
-# Helper function: Linear interpolation of the intersection with the zero level of SDF
-# ----------------------------
-function interpolate_zero(p1::SVector{3,Float64}, p2::SVector{3,Float64},
-                          f1::Float64, f2::Float64, mesh::BlockMesh; tol=mesh.grid_tol, max_iter=20)::Int64
-                          # coords of positive point, coords of negative point, sdf of positive point, sdf of negative point
-                          
-    pos1 = f1 >= -tol
-    pos2 = f2 >= -tol
-    # If both points have the same polarity according to tolerance, interpolation cannot be done correctly.
-    if pos1 == pos2
-        error("Both points have the same 'tolerance' polarity; one point must be close to zero (positive) and the other significantly negative.")
+# Functions for tetrahedral mesh slicing along an isosurface
+# Implements the "trim spikes" algorithm for accurate surface representation
+
+"""
+    slice_ambiguous_tetrahedra!(mesh::BlockMesh)
+
+Slice tetrahedra crossing the isosurface (SDF zero level set).
+Identifies elements crossing the boundary and replaces them with smaller
+tetrahedra that accurately represent the surface.
+"""
+function slice_ambiguous_tetrahedra!(mesh::BlockMesh)
+    @info "Slicing tetrahedra using trim_spikes logic (with element splitting)..."
+    new_IEN = Vector{Vector{Int64}}()
+    sizehint!(new_IEN, length(mesh.IEN)) # Pre-allocate for performance
+
+    # Cache for storing cut edge results to avoid duplicate cutting
+    cut_map = Dict{Tuple{Int, Int}, Int}()
+
+    original_node_count = length(mesh.X)
+    original_tet_count = length(mesh.IEN)
+
+    # Process original connectivity while building new connectivity
+    current_IEN = mesh.IEN
+    mesh.IEN = Vector{Vector{Int64}}() # Clear current IEN temporarily
+
+    for tet in current_IEN
+        # Apply the trim_spikes stencil to each tetrahedron
+        resulting_tets = apply_stencil_trim_spikes!(mesh, tet, cut_map)
+
+        # Add valid resulting tetrahedra to the new connectivity list
+        for nt in resulting_tets
+            push!(new_IEN, nt)
+        end
     end
 
-    # Initialize interval: low and high - assuming p1 and p2 are ordered by f
-    low, high = p1, p2
-    f_low, f_high = f1, f2
-    mid = low
-    for iter in 1:max_iter
-        mid = (low + high) / 2.0
-        f_mid = eval_sdf(mesh, mid)
-        # If the value is close enough to zero, end the iteration
-        if abs(f_mid) < tol
-            break
-        end
-        # Update one of the interval endpoints according to the sign of f_mid
-        if sign(f_mid) == sign(f_low)
-            low, f_low = mid, f_mid
-        else
-            high, f_high = mid, f_mid
-        end
+    mesh.IEN = new_IEN # Update mesh connectivity
+    new_tet_count = length(mesh.IEN)
+
+    println("  After trim_spikes slicing: $(new_tet_count) tetrahedra (removed $(original_tet_count - new_tet_count))")
+end
+
+"""
+    cut_edge!(i::Int, j::Int, mesh::BlockMesh, node_sdf::Vector{Float64}, cut_map::Dict{Tuple{Int, Int}, Int})::Int
+
+Calculate the intersection point between an edge (i,j) and the isosurface.
+Returns the node index at the intersection point, creating a new node if needed.
+Handles special cases where nodes are already on the surface.
+"""
+function cut_edge!(
+    i::Int, j::Int,
+    mesh::BlockMesh,
+    node_sdf::Vector{Float64},
+    cut_map::Dict{Tuple{Int, Int}, Int}
+)::Int
+    # Get SDF values for both endpoints
+    sdf_i = node_sdf[i]
+    sdf_j = node_sdf[j]
+
+    tol = mesh.grid_tol
+    is_i_zero = abs(sdf_i) < tol
+    is_j_zero = abs(sdf_j) < tol
+
+    # Handle cases where nodes are already on the surface
+    if is_i_zero && is_j_zero
+        # Both on surface - return the lower index for consistency
+        return min(i, j)
+    elseif is_i_zero
+        return i # Node i is already on the surface
+    elseif is_j_zero
+        return j # Node j is already on the surface
     end
 
-    # Quantize the found point to avoid duplicates in the hashtable
-    p_key = quantize(mid, tol)
-    sdf_of_iterp_point = eval_sdf(mesh, SVector{3, Float64}(p_key))
-    # println("check interp sdf: ", sdf_of_iterp_point)
+    # Ensure nodes are on opposite sides of the isosurface
+    if sign(sdf_i) == sign(sdf_j)
+        error("cut_edge! called with nodes on same side of isosurface: i=$i (sdf=$(sdf_i)), j=$j (sdf=$(sdf_j))")
+    end
+
+    # Canonical edge representation for consistent map lookup
+    edge = (min(i, j), max(i, j))
+
+    # Check if this edge has already been cut
+    if haskey(cut_map, edge)
+        return cut_map[edge]
+    end
+
+    # Get node positions
+    pos_i = mesh.X[i]
+    pos_j = mesh.X[j]
+
+    # Linear interpolation to find intersection point
+    alpha = sdf_i / (sdf_i - sdf_j)
+    alpha = clamp(alpha, 0.0, 1.0) # Handle numerical imprecision
+
+    # Calculate intersection position
+    new_pos = (1.0 - alpha) * pos_i + alpha * pos_j
+
+    # Quantize position for consistent node identification
+    p_key = quantize(new_pos, mesh.grid_tol)
+
+    # Either use existing node or create new one
+    local new_index::Int
     if haskey(mesh.node_hash, p_key)
-        return mesh.node_hash[p_key]
+        # Reuse existing node
+        new_index = mesh.node_hash[p_key]
+        # Ensure its SDF is exactly zero if it's a surface node
+        if abs(mesh.node_sdf[new_index]) > tol
+             mesh.node_sdf[new_index] = 0.0
+        end
     else
-        push!(mesh.X, mid)
-        push!(mesh.node_sdf, 0.0)  # or set exactly to 0
+        # Create new node at the intersection
+        push!(mesh.X, new_pos)
+        push!(mesh.node_sdf, 0.0) # Surface node (SDF = 0)
         new_index = length(mesh.X)
         mesh.node_hash[p_key] = new_index
-        return new_index
     end
-end
 
-function apply_stencil(mesh::BlockMesh, tet::Vector{Int64})
-  f = [ mesh.node_sdf[i] for i in tet ]
-  np = count(x -> x > (0), f)
-  if np > 0
-    return [ tet ]
-  else 
-    return Vector{Vector{Int64}}()  # All negative - skip this tetrahedron
-  end
-end
-
-# Function that traverses all tetrahedra in connectivity and applies complete stencils
-function slice_ambiguous_tetrahedra!(mesh::BlockMesh)
-  new_IEN = Vector{Vector{Int64}}()
-  for tet in mesh.IEN
-    # new_tets = apply_complete_stencil(mesh, tet)
-    new_tets = apply_stencil(mesh, tet)
-    for nt in new_tets
-      t_sdf = [mesh.node_sdf[i] for i in nt]
-      if any(x -> x >= 0, t_sdf)
-        push!(new_IEN, nt)
-      end
-    end
-  end
-  mesh.IEN = new_IEN
-  @info "After complete tetrahedral cutting: $(length(mesh.IEN)) tetrahedra"
+    # Cache result for future edge cuts
+    cut_map[edge] = new_index
+    return new_index
 end
 
 """
-    remove_nodes_outside_isocontour!(mesh::BlockMesh, tol::Float64=mesh.grid_tol)
+    check_tetrahedron_orientation(mesh::BlockMesh, tet::Vector{Int})
 
-Removes all nodes with SDF values less than -tol and all tetrahedral elements 
-that contain these nodes. This function helps clean up the mesh by removing
-elements that lie outside the intended body defined by the zero isocontour.
-
-# Arguments
-- `mesh::BlockMesh`: The mesh to be cleaned
-- `tol::Float64`: Tolerance value to determine which nodes are outside (default: mesh.grid_tol)
+Check if a tetrahedron has positive orientation (positive Jacobian determinant).
+Returns true for correctly oriented tetrahedra, false for inverted ones.
 """
-function remove_nodes_outside_isocontour!(mesh::BlockMesh, tol::Float64=mesh.grid_tol*10000)
-    @info "Removing nodes with SDF values less than -$tol and their connected elements..."
+function check_tetrahedron_orientation(mesh::BlockMesh, tet::Vector{Int})
+    # Validate indices
+    if length(tet) != 4 || any(i -> i <= 0 || i > length(mesh.X), tet)
+        @warn "Invalid tetrahedron indices for orientation check: $tet"
+        return false
+    end
     
-    # Identify nodes with SDF values less than -tol
-    outside_nodes = Set{Int}()
-    for (node_idx, sdf) in enumerate(mesh.node_sdf)
-        if sdf < -tol
-            push!(outside_nodes, node_idx)
+    # Get tetrahedron vertices
+    vertices = [mesh.X[tet[i]] for i in 1:4]
+
+    # Calculate edge vectors from first vertex
+    a = vertices[2] - vertices[1]
+    b = vertices[3] - vertices[1]
+    c = vertices[4] - vertices[1]
+
+    # Calculate Jacobian determinant (proportional to signed volume)
+    det_value = dot(a, cross(b, c))
+
+    # Positive determinant indicates correct orientation
+    return det_value > 1e-12
+end
+
+"""
+    fix_tetrahedron_orientation!(mesh::BlockMesh, tet::Vector{Int})
+
+Fix the orientation of an inverted tetrahedron by swapping vertices.
+Modifies the tetrahedron in-place. Returns true if fixed, false otherwise.
+"""
+function fix_tetrahedron_orientation!(mesh::BlockMesh, tet::Vector{Int})
+    if length(tet) != 4
+         @warn "Attempting to fix orientation of non-tetrahedron: $tet"
+         return false
+    end
+    
+    if !check_tetrahedron_orientation(mesh, tet)
+        # Swap last two vertices to flip orientation
+        tet[3], tet[4] = tet[4], tet[3]
+        return true  # Orientation was fixed
+    end
+    
+    return false # No fix needed
+end
+
+"""
+    apply_stencil_trim_spikes!(mesh::BlockMesh, tet::Vector{Int64}, cut_map::Dict{Tuple{Int, Int}, Int})
+
+Apply trimming algorithm to a tetrahedron that crosses the isosurface.
+Returns new tetrahedra that accurately represent the interior region (SDF ≥ 0).
+Uses case-by-case analysis based on SDF sign patterns for robust slicing.
+"""
+function apply_stencil_trim_spikes!(
+    mesh::BlockMesh,
+    tet::Vector{Int64},
+    cut_map::Dict{Tuple{Int, Int}, Int}
+)::Vector{Vector{Int64}}
+
+    # Get SDF values for tetrahedron nodes
+    node_indices = tet
+    node_sdf = [mesh.node_sdf[idx] for idx in node_indices]
+    tol = mesh.grid_tol
+
+    # --- Special cases handling ---
+    # Case 1: All nodes outside (SDF < -tol) - discard tetrahedron
+    if all(s -> s < -tol, node_sdf)
+        return Vector{Vector{Int64}}()
+    end
+    
+    # Case 2: All nodes inside or on surface (SDF ≥ -tol) - keep original
+    if all(s -> s >= -tol, node_sdf)
+        return [tet]
+    end
+    
+    # --- General case: Tetrahedron crossing the isosurface ---
+    # Sort vertices by SDF value (smallest first)
+    vert_data = [(node_sdf[i], node_indices[i]) for i in 1:4]
+    p = [1, 2, 3, 4]
+    flipped = false
+    
+    # Comparison function for consistent vertex ordering
+    less_than(idx1, idx2) = (vert_data[idx1][1] < vert_data[idx2][1]) || 
+                            (vert_data[idx1][1] == vert_data[idx2][1] && 
+                             vert_data[idx1][2] < vert_data[idx2][2])
+
+    # Sort vertices while tracking orientation flips
+    if less_than(p[2], p[1]) p[1], p[2] = p[2], p[1]; flipped = !flipped end
+    if less_than(p[4], p[3]) p[3], p[4] = p[4], p[3]; flipped = !flipped end
+    if less_than(p[3], p[1]) p[1], p[3] = p[3], p[1]; flipped = !flipped end
+    if less_than(p[4], p[2]) p[2], p[4] = p[4], p[2]; flipped = !flipped end
+    if less_than(p[3], p[2]) p[2], p[3] = p[3], p[2]; flipped = !flipped end
+
+    # Sorted vertices (s has lowest SDF, p has highest)
+    s_idx, r_idx, q_idx, p_idx = [vert_data[pi][2] for pi in p]
+    sdf_s, sdf_r, sdf_q, sdf_p = [vert_data[pi][1] for pi in p]
+
+    # Classify vertices by SDF sign (N=negative, P=positive, Z=zero)
+    is_s_neg = sdf_s < -tol
+    is_r_neg = sdf_r < -tol
+    is_q_neg = sdf_q < -tol
+
+    is_p_pos = sdf_p > tol
+    is_q_pos = sdf_q > tol
+    is_r_pos = sdf_r > tol
+
+    is_s_zero = abs(sdf_s) <= tol
+    is_r_zero = abs(sdf_r) <= tol
+    is_q_zero = abs(sdf_q) <= tol
+    is_p_zero = abs(sdf_p) <= tol
+
+    new_tets = Vector{Vector{Int64}}()
+
+    # Helper function to add tetrahedron with orientation check
+    function add_tet!(t::Vector{Int})
+        # Skip degenerate cases (duplicate vertices)
+        if length(Set(t)) != 4
+             # @warn "Degenerate tetrahedron generated (duplicate nodes): $t. Skipping."
+             return
         end
+        
+        # Fix orientation and add to result
+        fix_tetrahedron_orientation!(mesh, t)
+        if !check_tetrahedron_orientation(mesh, t)
+             @warn "Tetrahedron $t still has incorrect orientation after fix. Skipping."
+             return
+        end
+        push!(new_tets, t)
     end
+
+    # --- Case analysis based on SDF sign patterns ---
     
-    if isempty(outside_nodes)
-        @info "No nodes found with SDF values less than -$tol."
-        return mesh
+    # Case ZPPPP: Surface node with all others inside - special handling
+    if is_s_zero && !is_r_neg && !is_q_neg && !is_p_neg
+        # Subcase ZZZZ: All nodes on surface, check centroid
+        if is_r_zero && is_q_zero && is_p_zero
+             centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
+             if eval_sdf(mesh, centroid) < -tol
+                  return Vector{Vector{Int64}}() # Discard if centroid outside
+             else
+                  return Vector{Vector{Int64}}() # Discard surface tetrahedra
+             end
+        else # Other Z+++ patterns - discard
+             return Vector{Vector{Int64}}()
+        end
+
+    # Case NNNP: Three nodes outside, one inside
+    elseif is_s_neg && is_r_neg && is_q_neg && (is_p_pos || is_p_zero)
+        # Cut three edges from outside nodes to inside node
+        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        qp = cut_edge!(q_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        
+        # Create one tetrahedron from three cut points and interior node
+        if flipped
+            add_tet!([rp, sp, qp, p_idx])
+        else
+            add_tet!([sp, rp, qp, p_idx])
+        end
+
+    # Case NPPP: One node outside, three inside
+    elseif is_s_neg && (is_p_pos || is_p_zero) && (is_q_pos || is_q_zero) && (is_r_pos || is_r_zero)
+        if !is_r_neg && !is_q_neg # Confirm r, q, p are interior nodes
+            # Cut edges from outside node to each interior node
+            sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map)
+            sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
+            sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+            
+            # Create three tetrahedra filling the interior region
+            if flipped
+                add_tet!([q_idx, r_idx, p_idx, sr])
+                add_tet!([p_idx, q_idx, sr, sq])
+                add_tet!([sr, p_idx, sq, sp])
+            else
+                add_tet!([r_idx, q_idx, p_idx, sr])
+                add_tet!([q_idx, p_idx, sr, sq])
+                add_tet!([p_idx, sr, sq, sp])
+            end
+        else
+             @warn "Logic error in NPPP branch: r=$sdf_r, q=$sdf_q, p=$sdf_p"
+             return Vector{Vector{Int64}}()
+        end
+
+    # Case NNPP: Two nodes outside, two inside
+    elseif is_s_neg && is_r_neg && (is_q_pos || is_q_zero) && (is_p_pos || is_p_zero)
+        # Cut all four edges crossing the isosurface
+        sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
+        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        rq = cut_edge!(r_idx, q_idx, mesh, mesh.node_sdf, cut_map)
+        rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        
+        # Create three tetrahedra for interior region
+        if flipped
+            add_tet!([p_idx, rq, q_idx, sq])
+            add_tet!([p_idx, sp, sq, rp])
+            add_tet!([p_idx, rp, sq, rq])
+        else
+            add_tet!([p_idx, q_idx, rq, sq])
+            add_tet!([p_idx, sq, sp, rp])
+            add_tet!([p_idx, sq, rp, rq])
+        end
+
+    # Case NZPP: One outside, one on surface, two inside
+    elseif is_s_neg && is_r_zero && (is_q_pos || is_q_zero) && (is_p_pos || is_p_zero)
+        # Cut edges from outside node to interior nodes
+        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
+        
+        # Create two tetrahedra
+        if flipped
+             add_tet!([q_idx, r_idx, p_idx, sq])
+             add_tet!([p_idx, r_idx, sq, sp])
+        else
+             add_tet!([r_idx, q_idx, p_idx, sq])
+             add_tet!([r_idx, p_idx, sq, sp])
+        end
+
+    # Case NNZP: Two outside, one on surface, one inside
+    elseif is_s_neg && is_r_neg && is_q_zero && (is_p_pos || is_p_zero)
+        # Cut edges from outside nodes to inside node
+        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        
+        # Create one tetrahedron
+        if flipped
+             add_tet!([p_idx, q_idx, rp, sp])
+        else
+             add_tet!([q_idx, p_idx, rp, sp])
+        end
+
+    # Case NZZP: One outside, two on surface, one inside
+    elseif is_s_neg && is_r_zero && is_q_zero && (is_p_pos || is_p_zero)
+        # Cut edge from outside node to inside node
+        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        
+        # Create one tetrahedron
+        if flipped
+             add_tet!([q_idx, r_idx, p_idx, sp])
+        else
+             add_tet!([r_idx, q_idx, p_idx, sp])
+        end
+
+    # Unexpected SDF pattern
+    else
+        @warn "Unexpected SDF pattern in apply_stencil_trim_spikes!: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p. Indices: s=$s_idx, r=$r_idx, q=$q_idx, p=$p_idx. Tet: $tet. Flipped: $flipped"
+        return Vector{Vector{Int64}}() # Discard in case of unexpected pattern
     end
-    
-    @info "Found $(length(outside_nodes)) nodes with SDF values less than -$tol."
-    
-    # Identify elements containing these nodes using inverse connectivity
-    # This is more efficient than checking each element individually
-    outside_elements = Set{Int}()
-    for node_idx in outside_nodes
-        # Add all elements connected to this outside node
-        union!(outside_elements, mesh.INE[node_idx])
-    end
-    
-    # Count elements before removal
-    original_element_count = length(mesh.IEN)
-    
-    # Keep only elements not marked for removal
-    mesh.IEN = [element for (idx, element) in enumerate(mesh.IEN) if !(idx in outside_elements)]
-    
-    removed_count = original_element_count - length(mesh.IEN)
-    @info "Removed $removed_count elements ($(round(removed_count/original_element_count*100, digits=2))%) containing nodes outside the isocontour."
-    
-    return mesh
+
+    return new_tets
 end
 
 """
-    remove_inverted_elements!(mesh::BlockMesh)
+    fix_tetrahedra_orientation!(mesh::BlockMesh)
 
-Removes tetrahedral elements with negative Jacobian determinants (negative volumes)
-from the mesh. These inverted elements can occur during the warping process 
-when nodes are adjusted to fit the isosurface.
+Checks and fixes the orientation of all tetrahedral elements in the mesh
+by ensuring each element has a positive Jacobian determinant (positive volume).
+Elements with negative determinants are fixed by reordering their nodes.
 
 # Arguments
-- `mesh::BlockMesh`: The mesh to be cleaned
+- `mesh::BlockMesh`: The mesh to check and fix
+- `tol::Float64`: Tolerance for considering volume as zero (default: 1e-12)
 
 # Returns
-- `mesh::BlockMesh`: The modified mesh with inverted elements removed
-
-# Note
-This function should be called before updating the mesh connectivity to ensure
-that all inverted elements are properly removed from the mesh.
+- Number of elements that were fixed
 """
-function remove_inverted_elements!(mesh::BlockMesh)
-    # Set default tolerance if not provided
-    # if volume_tolerance === nothing
-        volume_tolerance = mesh.grid_tol * 1e-6
-    # end
+function fix_tetrahedra_orientation!(mesh::BlockMesh, tol::Float64=1e-12)
+    fixed_count = 0
+    degenerate_count = 0
+    failed_count = 0
     
-    # Pre-allocate output for better performance
-    valid_elements = Vector{Vector{Int}}()
-    sizehint!(valid_elements, length(mesh.IEN))
-    
-    # Track problematic elements for reporting
-    negative_elements = Tuple{Int,Float64}[]
-    zero_elements = Tuple{Int,Float64}[]
+    @info "Checking and fixing tetrahedra orientation..."
     
     for (elem_idx, tet) in enumerate(mesh.IEN)
-        # Get vertices of the tetrahedron as static vectors for better performance
-        vertices = SVector{4,SVector{3,Float64}}(
-            mesh.X[tet[1]], mesh.X[tet[2]], mesh.X[tet[3]], mesh.X[tet[4]]
-        )
+        # Skip elements with duplicate nodes
+        if length(Set(tet)) != 4
+            degenerate_count += 1
+            continue
+        end
         
-        # Calculate volume using cross product method
+        # Get vertices of the tetrahedron
+        vertices = [mesh.X[node_idx] for node_idx in tet]
+        
+        # Calculate edge vectors from first vertex
         a = vertices[2] - vertices[1]
         b = vertices[3] - vertices[1]
         c = vertices[4] - vertices[1]
         
-        # Calculate determinant (6 times the volume)
+        # Calculate Jacobian determinant (6 times the volume)
         det_value = dot(a, cross(b, c))
         
-        # Actual volume
-        volume = det_value / 6.0
-        
-        # Categorize element based on volume
-        if det_value < 0
-            # Negative volume (inverted element)
-            push!(negative_elements, (elem_idx, volume))
-        elseif abs(det_value) <= volume_tolerance
-            # Near-zero volume (degenerate element)
-            push!(zero_elements, (elem_idx, volume))
-        else
-            # Valid element with positive volume
-            push!(valid_elements, tet)
+        # Check if element has negative or zero volume
+        if det_value <= tol
+            # Try to fix by swapping nodes 3 and 4
+            mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] = mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3]
+            
+            # Check if the fix worked
+            vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
+            a = vertices[2] - vertices[1]
+            b = vertices[3] - vertices[1]
+            c = vertices[4] - vertices[1]
+            new_det = dot(a, cross(b, c))
+            
+            if new_det > tol
+                fixed_count += 1
+            else
+                # If that didn't work, try swapping nodes 1 and 2
+                mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] = mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3] # Restore
+                mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] = mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1]
+                
+                # Check again
+                vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
+                a = vertices[2] - vertices[1]
+                b = vertices[3] - vertices[1]
+                c = vertices[4] - vertices[1]
+                new_det = dot(a, cross(b, c))
+                
+                if new_det > tol
+                    fixed_count += 1
+                else
+                    # Restore and try one more swap
+                    mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] = mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1] # Restore
+                    mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][3] = mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][2]
+                    
+                    vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
+                    a = vertices[2] - vertices[1]
+                    b = vertices[3] - vertices[1]
+                    c = vertices[4] - vertices[1]
+                    new_det = dot(a, cross(b, c))
+                    
+                    if new_det > tol
+                        fixed_count += 1
+                    else
+                        failed_count += 1
+                    end
+                end
+            end
         end
     end
     
-    # Sort problematic elements by volume for reporting
-    sort!(negative_elements, by=x->x[2])
-    sort!(zero_elements, by=x->abs(x[2]))
-    
-    # Get total count of removed elements
-    negative_count = length(negative_elements)
-    zero_count = length(zero_elements)
-    total_removed = negative_count + zero_count
-    
-    # Report problematic elements if any were found
-    if total_removed > 0
-        @info "Removing $total_removed problematic elements from the mesh ($negative_count negative, $zero_count zero-volume)."
-        
-        # Report negative elements
-        if !isempty(negative_elements)
-            println("⚠️  REMOVING NEGATIVE VOLUME ELEMENTS ⚠️")
-            println("+------------+------------------------+")
-            println("| Element ID | Volume                 |")
-            println("+------------+------------------------+")
-            
-            # Show up to 5 most negative elements
-            for (i, (elem_id, volume)) in enumerate(negative_elements[1:min(5, length(negative_elements))])
-                println(@sprintf("| %-10d | %-22.6e |", elem_id, volume))
-            end
-            
-            if length(negative_elements) > 5
-                println("| ... and $(length(negative_elements) - 5) more negative volume elements")
-            end
-            println("+------------+------------------------+")
-        end
-        
-        # Report zero volume elements
-        if !isempty(zero_elements)
-            println("⚠️  REMOVING ZERO VOLUME ELEMENTS ⚠️")
-            println("+------------+------------------------+")
-            println("| Element ID | Volume                 |")
-            println("+------------+------------------------+")
-            
-            # Show up to 5 elements with smallest absolute volume
-            for (i, (elem_id, volume)) in enumerate(zero_elements[1:min(5, length(zero_elements))])
-                println(@sprintf("| %-10d | %-22.6e |", elem_id, volume))
-            end
-            
-            if length(zero_elements) > 5
-                println("| ... and $(length(zero_elements) - 5) more zero volume elements")
-            end
-            println("+------------+------------------------+")
-        end
-    else
-        @info "No problematic elements found in the mesh."
+    if degenerate_count > 0
+        @warn "Found $degenerate_count elements with duplicate nodes"
     end
     
-    # Update mesh connectivity
-    mesh.IEN = valid_elements
+    if failed_count > 0
+        @warn "Failed to fix orientation of $failed_count elements"
+    end
     
-    return mesh
+    @info "Fixed orientation of $fixed_count tetrahedra"
+    return fixed_count
 end
-
-
-# Function to warp nodes onto the isosurface based on element connectivity
-function adjust_nodes_to_isosurface!(mesh::BlockMesh)
-  @info "Starting node warping to isosurface..."
-  
-  # Track nodes that have been processed to avoid duplicating work
-  processed_nodes = Set{Int}()
-  nodes_moved = 0
-  nodes_skipped = 0
-  
-  # Helper function to check if moving a node would cause element inversion
-  function would_cause_inversion(node_idx, new_position)
-      # Store original position
-      original_position = mesh.X[node_idx]
-      
-      # Temporarily move the node
-      mesh.X[node_idx] = new_position
-      
-      # Check all elements containing this node
-      inversion_found = false
-      for elem_idx in mesh.INE[node_idx]
-          tet = mesh.IEN[elem_idx]
-          vertices = [mesh.X[v] for v in tet]
-          
-          # Calculate Jacobian determinant (proportional to signed volume)
-          jacobian_det = dot(
-              cross(vertices[2] - vertices[1], vertices[3] - vertices[1]),
-              vertices[4] - vertices[1]
-          )
-          
-          if jacobian_det < 0
-              inversion_found = true
-              break
-          end
-      end
-      
-      # Restore original position
-      mesh.X[node_idx] = original_position
-      
-      return inversion_found
-  end
-  
-  # First pass: Find nodes with negative SDF and process them
-  for node_idx in 1:length(mesh.X)
-      # Skip already processed nodes
-      node_idx in processed_nodes && continue
-      
-      # Only process nodes with negative SDF values
-      if mesh.node_sdf[node_idx] < 0
-          # Get all elements containing this node
-          elements = mesh.INE[node_idx]
-          
-          # Skip nodes that aren't part of any elements
-          isempty(elements) && continue
-          
-          # Try to find an element with exactly 3 negative nodes
-          found_3neg_element = false
-          edge_to_warp = nothing
-          
-          for elem_idx in elements
-              tet = mesh.IEN[elem_idx]
-              # Count negative nodes in this tetrahedron
-              neg_nodes = filter(i -> mesh.node_sdf[i] < 0, tet)
-              
-              if length(neg_nodes) == 3 && node_idx in neg_nodes
-                  # This element has exactly 3 negative nodes including our target node
-                  found_3neg_element = true
-                  
-                  # Find the positive node
-                  pos_node = first(filter(i -> mesh.node_sdf[i] >= 0, tet))
-                  
-                  # Calculate the SDF values
-                  pos_sdf = mesh.node_sdf[pos_node]
-                  neg_sdf = mesh.node_sdf[node_idx]
-                  
-                  # Check if the edge between positive and negative node crosses zero
-                  if sign(pos_sdf) != sign(neg_sdf)
-                      # Calculate approximate zero crossing using linear interpolation
-                      t = pos_sdf / (pos_sdf - neg_sdf)
-                      zero_point = mesh.X[pos_node] + t * (mesh.X[node_idx] - mesh.X[pos_node])
-                      
-                      # Check if moving to this point would cause inversion
-                      if !would_cause_inversion(node_idx, zero_point)
-                          # Found a suitable edge to warp along
-                          edge_to_warp = (pos_node, node_idx)
-                          break
-                      end
-                  end
-              end
-          end
-          
-          # If no suitable edge found yet, try all edges connecting to positive nodes
-          if edge_to_warp === nothing
-              for elem_idx in elements
-                  tet = mesh.IEN[elem_idx]
-      
-                  # Look for edges connecting our negative node to positive nodes
-                  for other_node in tet
-                      # Skip if it's the same node
-                      other_node == node_idx && continue
-          
-                      # Check if the other node has positive SDF (crosses zero level)
-                      if mesh.node_sdf[other_node] > 0
-                          # Calculate approximate zero crossing
-                          pos_sdf = mesh.node_sdf[other_node]
-                          neg_sdf = mesh.node_sdf[node_idx]
-                          
-                          # Make sure signs are opposite (to cross the zero level)
-                          if sign(pos_sdf) == sign(neg_sdf)
-                              continue
-                          end
-                          
-                          t = pos_sdf / (pos_sdf - neg_sdf)
-                          zero_point = mesh.X[other_node] + t * (mesh.X[node_idx] - mesh.X[other_node])
-                          
-                          # Check if moving to this point would cause inversion
-                          if !would_cause_inversion(node_idx, zero_point)
-                              # Found a suitable edge to warp along
-                              edge_to_warp = (other_node, node_idx)
-                              break
-                          end
-                      end
-                  end
-      
-                  # If we found a suitable edge, no need to check more elements
-                  edge_to_warp !== nothing && break
-              end
-          end
-          
-          # If we found an edge to warp along, perform the warping
-          if edge_to_warp !== nothing
-              pos_node, neg_node = edge_to_warp
-              
-              # Interpolate to find the zero crossing
-              try
-                  new_node_idx = interpolate_zero(
-                      mesh.X[pos_node],  # coordinates of positive vertex
-                      mesh.X[neg_node],  # coordinates of negative vertex
-                      mesh.node_sdf[pos_node],  # SDF value of positive vertex
-                      mesh.node_sdf[neg_node],  # SDF value of negative vertex
-                      mesh
-                  )
-                  
-                  # Update the node's position and SDF value if a new node wasn't created
-                  if new_node_idx == neg_node
-                      mesh.node_sdf[neg_node] = 0.0
-                      nodes_moved += 1
-                  else
-                      # If a new node was created, update all elements that contain the old node
-                      for elem_idx in elements
-                          tet = mesh.IEN[elem_idx]
-                          for i in 1:length(tet)
-                              if tet[i] == neg_node
-                                  mesh.IEN[elem_idx][i] = new_node_idx
-                              end
-                          end
-                      end
-                      nodes_moved += 1
-                  end
-              catch e
-                  @warn "Error during interpolation for node $node_idx: $e"
-                  nodes_skipped += 1
-              end
-          else
-              # No suitable edge was found - all would cause inversion
-              @warn "Node $node_idx couldn't be moved to isosurface - all potential movements would cause element inversion"
-              nodes_skipped += 1
-          end
-          
-          # Mark this node as processed
-          push!(processed_nodes, node_idx)
-      end
-  end
-  
-  @info "Node warping complete. $nodes_moved nodes were moved to the isosurface. $nodes_skipped nodes were skipped to prevent element inversion."
- 
-  # Remove nodes outside the isocontour and elements that contain them
-  # remove_nodes_outside_isocontour!(mesh)
-
-  # Remove any inverted elements (with negative Jacobian determinant)
-  remove_inverted_elements!(mesh)
-
-  # After warping, we need to update the mesh connectivity
-  update_connectivity!(mesh)
-end
-
-
