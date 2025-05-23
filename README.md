@@ -13,13 +13,8 @@ A Julia package for generating high-quality tetrahedral meshes from implicit geo
 </p>
 
 <div style="display: flex; justify-content: center; align-items: center; gap: 10px;">
-  <img src="doc/beam.png" style="height: 300px; max-width: 50%;" alt="Original beam geometry" />
-  <img src="doc/beam_cut.png" style="height: 300px; max-width: 50%;" alt="Sliced beam tetrahedral mesh" />
-</div>
-
-<div style="display: flex; width: 100%; gap: 5px;">
-  <img src="doc/beam.png" style="flex: 1; height: auto;" alt="Original beam geometry" />
-  <img src="doc/beam_cut.png" style="flex: 1; height: auto;" alt="Sliced beam tetrahedral mesh" />
+  <img src="doc/beam.png" style="height: 200px; max-width: 50%;" alt="Original beam geometry" />
+  <img src="doc/beam_cut.png" style="height: 200px; max-width: 50%;" alt="Sliced beam tetrahedral mesh" />
 </div>
 
 ## Function Input
