@@ -7,6 +7,16 @@ A Julia package for generating high-quality tetrahedral meshes from implicit geo
   <img src="doc/bunny_tet-mesh_cut.png" width="45%" alt="Generated tetrahedral mesh" />
 </p>
 
+<p align="center">
+  <img src="doc/beam.png" height="300" alt="Original beam geometry" />
+  <img src="doc/beam_cut.png" height="300" alt="Sliced beam tetrahedral mesh" />
+</p>
+
+<div style="display: flex; justify-content: center; align-items: center; gap: 10px;">
+  <img src="doc/beam.png" style="height: 300px; max-width: 50%;" alt="Original beam geometry" />
+  <img src="doc/beam_cut.png" style="height: 300px; max-width: 50%;" alt="Sliced beam tetrahedral mesh" />
+</div>
+
 ## Function Input
 Main function for generating tetrahedral meshes from SDF data:
 
