@@ -3,8 +3,8 @@
 A Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs). It transforms smooth implicit surfaces into finite element tetrahedral mesh while preserving geometric features and ensuring element quality. The package includes robust mesh optimization, quality assessment, and geometric modification capabilities.
 
 <div style="display: flex; justify-content: center; align-items: center; gap: 10px;">
-  <img src="doc/beam.png" style="height: 250px; max-width: 50%;" alt="Original beam geometry" />
-  <img src="doc/beam_cut.png" style="height: 250px; max-width: 50%;" alt="Sliced beam tetrahedral mesh" />
+  <img src="doc/beam.png" style="height: 270px; max-width: 50%;" alt="Original beam geometry" />
+  <img src="doc/beam_cut.png" style="height: 270px; max-width: 50%;" alt="Sliced beam tetrahedral mesh" />
 </div>
 
 ## Function Input
