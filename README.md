@@ -7,6 +7,15 @@ A Julia package for generating high-quality tetrahedral meshes from implicit geo
   <img src="doc/beam_cut.png" style="height: 270px; max-width: 50%;" alt="Sliced beam tetrahedral mesh" />
 </div>
 
+## Features
+
+- **Robust Meshing**: Creates high-quality tetrahedral meshes from implicit surfaces using Implicit Domain Stuffing algorithm
+- **Mesh Optimization**: Includes Laplacian smoothing and adaptive quality-based optimization
+- **Quality Control**: Quality metrics and visualization tools
+- **Geometric Modifications**: Support for cutting planes and boundary refinement
+- **Multiple Discretization Schemes**: A15 and Schlafli schemes for different element patterns
+- **Export Capabilities**: VTK-based visualization with detailed quality metrics
+
 ## Function Input
 Main function for generating tetrahedral meshes from SDF data:
 
@@ -98,7 +107,10 @@ mesh = generate_tetrahedral_mesh(
     "path/to/sdf_data.jld2",
     "beam"
 )
+```
+## Advanced Example Usage
 
+```julia
 # Advanced usage with custom options and cutting planes
 plane_definitions = [
     PlaneDefinition([-1.0, 0.0, 0.0], [0.0, 10.0, 0.0], Square(30.0)),
@@ -120,14 +132,8 @@ mesh = generate_tetrahedral_mesh(
     "beam_cut",
     options=options
 )
-
-# Without mesh optimization
-mesh = generate_tetrahedral_mesh(
-    "path/to/grid_data.jld2",
-    "path/to/sdf_data.jld2",
-    "beam_no_opt",
-    options=MeshGenerationOptions(optimize = false)
-)
+slice_mesh_with_plane!(mesh, "x", 0.5, -1) # sliced by yz plane in half, -1 (normal) -> delete every element before plane
+export_mesh_vtu(mesh, "sliced.vtu")
 ```
 
 ## Quality Assessment
@@ -151,15 +157,6 @@ For quick volume checks:
 ```julia
 TetMesh_volumes(mesh)
 ```
-
-## Features
-
-- **Robust Meshing**: Creates high-quality tetrahedral meshes from implicit surfaces using Implicit Domain Stuffing algorithm
-- **Mesh Optimization**: Includes Laplacian smoothing and adaptive quality-based optimization
-- **Quality Control**: Quality metrics and visualization tools
-- **Geometric Modifications**: Support for cutting planes and boundary refinement
-- **Multiple Discretization Schemes**: A15 and Schlafli schemes for different element patterns
-- **Export Capabilities**: VTK-based visualization with detailed quality metrics
 
 ## TODO List
 - [ ] Parallel processing for large meshes
