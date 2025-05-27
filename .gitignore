@@ -9,3 +9,6 @@
 *.smesh
 *.stl
 *.png
+
+!doc/*.png
+!doc/*.img
