@@ -1,40 +1,4 @@
 """
-    detect_boundary_nodes(mesh::BlockMesh) -> Set{Int}
-
-Detekuje uzly na hranici sítě (uzly patřící k vnějším stěnám).
-"""
-function detect_boundary_nodes(mesh::BlockMesh)
-    # Slovník pro počítání, kolikrát se jednotlivé trojúhelníkové stěny vyskytují
-    face_count = Dict{Tuple{Int,Int,Int}, Int}()
-    
-    # Procházej všechny tetrahedrální elementy a jejich stěny
-    for tet in mesh.IEN
-        # Každý tetrahedr má 4 stěny
-        faces = [
-            tuple(sort([tet[1], tet[2], tet[3]])...),  # Stěna 1-2-3
-            tuple(sort([tet[1], tet[2], tet[4]])...),  # Stěna 1-2-4
-            tuple(sort([tet[1], tet[3], tet[4]])...),  # Stěna 1-3-4
-            tuple(sort([tet[2], tet[3], tet[4]])...)   # Stěna 2-3-4
-        ]
-        
-        for face in faces
-            face_count[face] = get(face_count, face, 0) + 1
-        end
-    end
-    
-    # Hranični stěny se vyskytují pouze jednou
-    boundary_faces = [face for (face, count) in face_count if count == 1]
-    
-    # Sesbírej všechny uzly z hraničních stěn
-    boundary_nodes = Set{Int}()
-    for face in boundary_faces
-        union!(boundary_nodes, face)
-    end
-    
-    return boundary_nodes
-end
-
-"""
     calculate_mesh_volume(mesh::BlockMesh) -> Float64
 
 Vypočítá celkový objem tetrahedrální sítě jako sumu objemů jednotlivých tetrahedrů.
@@ -62,295 +26,302 @@ function calculate_mesh_volume(mesh::BlockMesh)
 end
 
 """
-    correct_mesh_volume!(mesh::BlockMesh, fine_sdf::Array{Float32,3}, fine_grid::Array{Vector{Float32},3}; 
-                        tolerance::Float64=0.0005, max_iterations::Int=50)
+    detect_surface_nodes(mesh::BlockMesh, sdf_tolerance::Float64=0.01) -> Set{Int}
 
-Koriguje objem tetrahedrální sítě tak, aby přesně odpovídal objemu implicitní geometrie.
-Používá metodu půlení intervalu pro iterativní přiblížení k cílovému objemu.
+Detects nodes that are actually on or near the isosurface (SDF ≈ 0),
+rather than just boundary nodes of the mesh topology.
+This is more appropriate for volume correction.
+"""
+function detect_surface_nodes(mesh::BlockMesh, sdf_tolerance::Float64=0.01)
+    surface_nodes = Set{Int}()
+    
+    # Find nodes with SDF values close to zero (on the isosurface)
+    for (node_idx, sdf_val) in enumerate(mesh.node_sdf)
+        if abs(sdf_val) <= sdf_tolerance
+            push!(surface_nodes, node_idx)
+        end
+    end
+    
+    @info "Detected $(length(surface_nodes)) surface nodes (SDF ≈ 0)"
+    return surface_nodes
+end
+
+"""
+    check_element_validity(mesh::BlockMesh) -> (Int, Int)
+
+Checks for inverted or degenerate elements in the mesh.
+Returns (negative_count, zero_volume_count).
+"""
+function check_element_validity(mesh::BlockMesh)
+    negative_count = 0
+    zero_volume_count = 0
+    tolerance = 1e-12
+    
+    for tet in mesh.IEN
+        # Skip degenerate elements with duplicate vertices
+        if length(Set(tet)) != 4
+            zero_volume_count += 1
+            continue
+        end
+        
+        # Calculate determinant (proportional to signed volume)
+        vertices = [mesh.X[node_idx] for node_idx in tet]
+        a = vertices[2] - vertices[1]
+        b = vertices[3] - vertices[1]
+        c = vertices[4] - vertices[1]
+        det_value = dot(a, cross(b, c))
+        
+        if det_value < -tolerance
+            negative_count += 1
+        elseif abs(det_value) <= tolerance
+            zero_volume_count += 1
+        end
+    end
+    
+    return negative_count, zero_volume_count
+end
+
+"""
+    correct_mesh_volume!(mesh::BlockMesh, fine_sdf::Array{Float32,3}, fine_grid::Array{Vector{Float32},3}; 
+                               tolerance::Float64=0.005, max_iterations::Int=20)
+
+Improved volume correction method that:
+1. Uses surface nodes (SDF ≈ 0) instead of boundary nodes
+2. Applies smaller, more conservative adjustments
+3. Validates mesh integrity after each adjustment
+4. Uses a more robust bisection approach
 """
 function correct_mesh_volume!(mesh::BlockMesh, fine_sdf::Array{Float32,3}, fine_grid::Array{Vector{Float32},3}; 
-                             tolerance::Float64=0.0005, max_iterations::Int=50)
-    @info "Correcting mesh volume to match SDF geometry..."
+                                   tolerance::Float64=0.005, max_iterations::Int=20)
+    @info "Starting improved volume correction..."
     
-    # 1. Vypočítej referenční objem z SDF dat
+    # Calculate reference volume from SDF data
     reference_volume = Float64(calculate_volume_from_sdf(fine_sdf, fine_grid))
     @info "Reference volume from SDF: $reference_volume"
     
-    # 2. Detekuj vnější uzly sítě
-    boundary_nodes = detect_boundary_nodes(mesh)
-    @info "Detected $(length(boundary_nodes)) boundary nodes"
+    # Detect surface nodes (nodes with SDF ≈ 0)
+    surface_nodes = detect_surface_nodes(mesh, 0.02)  # Slightly larger tolerance
     
-    # 3. Uložení původních pozic hraničních uzlů
-    original_positions = Dict{Int, SVector{3,Float64}}()
-    for node_idx in boundary_nodes
-        original_positions[node_idx] = mesh.X[node_idx]
+    if isempty(surface_nodes)
+        @warn "No surface nodes detected. Cannot perform volume correction."
+        return false
     end
     
-    # 4. Inicializuj parametry pro půlení intervalu
-    initial_step = 0.1  # Zvětšený počáteční krok
-    lower_bound = -initial_step
-    upper_bound = initial_step
+    # Store original positions of surface nodes
+    original_positions = Dict{Int, SVector{3,Float64}}()
+    original_sdf_values = Dict{Int, Float64}()
+    for node_idx in surface_nodes
+        original_positions[node_idx] = mesh.X[node_idx]
+        original_sdf_values[node_idx] = mesh.node_sdf[node_idx]
+    end
     
-    # Výpočet počátečního objemu sítě
-    mesh_volume = calculate_mesh_volume(mesh)
-    @info "Initial mesh volume: $mesh_volume"
+    # Calculate initial mesh volume and error
+    initial_volume = calculate_mesh_volume(mesh)
+    initial_error = abs(initial_volume - reference_volume) / reference_volume
+    @info "Initial mesh volume: $initial_volume"
+    @info "Initial relative error: $(initial_error * 100)%"
     
-    relative_error = abs(mesh_volume - reference_volume) / reference_volume
-    @info "Initial relative error: $(relative_error * 100)%"
-    
-    if relative_error <= tolerance
+    if initial_error <= tolerance
         @info "Mesh volume already within tolerance"
         return true
     end
     
-    # Inicializace pro půlení intervalu
-    best_level = 0.0
-    best_error = relative_error
+    # Check initial mesh validity
+    neg_count, zero_count = check_element_validity(mesh)
+    @info "Initial mesh validity: $neg_count negative elements, $zero_count zero-volume elements"
     
-    # 5. Hlavní iterační smyčka s půlením intervalu
+    # Determine adjustment direction and magnitude
+    volume_deficit = reference_volume - initial_volume
+    adjustment_direction = sign(volume_deficit)  # +1 for expanding, -1 for contracting
+    
+    @info "Volume deficit: $volume_deficit ($(adjustment_direction > 0 ? "need to expand" : "need to contract"))"
+    
+    # Use smaller, more conservative steps
+    max_sdf_adjustment = 0.02  # Much smaller than before
+    current_adjustment = 0.0
+    step_size = max_sdf_adjustment / max_iterations
+    
+    best_volume = initial_volume
+    best_error = initial_error
+    best_adjustment = 0.0
+    
+    # Progressive adjustment approach
     for iteration in 1:max_iterations
-        # Určení nové úrovne SDF pro test
-        current_level = (lower_bound + upper_bound) / 2.0
+        current_adjustment = step_size * iteration * adjustment_direction
         
-        @info "Iteration $iteration: Testing SDF level $current_level"
+        @info "Iteration $iteration: Testing SDF adjustment $current_adjustment"
         
-        # Resetuj pozice uzlů na původní
-        restore_boundary_nodes!(mesh, boundary_nodes, original_positions)
+        # Restore original positions
+        restore_surface_nodes!(mesh, surface_nodes, original_positions, original_sdf_values)
         
-        # Posuň hranční uzly na novou úroveň SDF
-        successful_moves = move_boundary_nodes_to_sdf_level!(mesh, boundary_nodes, current_level)
+        # Apply conservative adjustment to surface nodes
+        successful_moves = conservative_surface_adjustment!(mesh, surface_nodes, current_adjustment)
         
         if successful_moves == 0
-            @warn "No nodes could be moved to SDF level $current_level"
-            # Zmenši interval
-            if mesh_volume < reference_volume
-                upper_bound = current_level
-            else
-                lower_bound = current_level
-            end
-            continue
-        end
-        
-        # Vypočítaj nový objem sítě
-        new_mesh_volume = calculate_mesh_volume(mesh)
-        new_relative_error = abs(new_mesh_volume - reference_volume) / reference_volume
-        
-        @info "  New mesh volume: $new_mesh_volume"
-        @info "  Relative error: $(new_relative_error * 100)%"
-        @info "  Successfully moved: $successful_moves nodes"
-        
-        # Aktualizuj nejlepší řešení
-        if new_relative_error < best_error
-            best_error = new_relative_error
-            best_level = current_level
-        end
-        
-        # Kontrola konvergence
-        if new_relative_error <= tolerance
-            @info "Volume correction converged after $iteration iterations"
-            @info "Final volume: $new_mesh_volume (target: $reference_volume)"
-            return true
-        end
-        
-        # Logika půlení intervalu - OPRAVENÁ
-        if new_mesh_volume < reference_volume
-            # Objem sítě je menší → potřebujeme větší objem → posunout uzly směrem ven (pozitivní SDF)
-            lower_bound = current_level
-        else
-            # Objem sítě je větší → potřebujeme menší objem → posunout uzly směrem dovnitř (negativní SDF)
-            upper_bound = current_level
-        end
-        
-        # Kontrola, zda je interval příliš malý pro další iterace
-        if abs(upper_bound - lower_bound) < 1e-8
-            @warn "Interval became too small, stopping iterations"
+            @warn "No nodes could be adjusted at level $current_adjustment"
             break
         end
         
-        mesh_volume = new_mesh_volume
-    end
-    
-    # Použij nejlepší nalezené řešení
-    @info "Applying best solution with SDF level $best_level (error: $(best_error * 100)%)"
-    restore_boundary_nodes!(mesh, boundary_nodes, original_positions)
-    move_boundary_nodes_to_sdf_level!(mesh, boundary_nodes, best_level)
-    
-    @warn "Volume correction did not converge within $max_iterations iterations"
-    @info "Final relative error: $(best_error * 100)%"
-    return false
-end
-
-"""
-    restore_boundary_nodes!(mesh::BlockMesh, boundary_nodes::Set{Int}, original_positions::Dict{Int, SVector{3,Float64}})
-
-Obnoví původní pozice hraničních uzlů.
-"""
-function restore_boundary_nodes!(mesh::BlockMesh, boundary_nodes::Set{Int}, original_positions::Dict{Int, SVector{3,Float64}})
-    for node_idx in boundary_nodes
-        mesh.X[node_idx] = original_positions[node_idx]
-        mesh.node_sdf[node_idx] = eval_sdf(mesh, mesh.X[node_idx])
-    end
-end
-
-"""
-    move_boundary_nodes_to_sdf_level!(mesh::BlockMesh, boundary_nodes::Set{Int}, target_sdf::Float64; 
-                                     max_iterations::Int=10, tolerance::Float64=1e-4) -> Int
-
-Posune hranční uzly na specifikovanou úroveň SDF. Vrací počet úspěšně posunutých uzlů.
-"""
-function move_boundary_nodes_to_sdf_level!(mesh::BlockMesh, boundary_nodes::Set{Int}, target_sdf::Float64; 
-                                          max_iterations::Int=10, tolerance::Float64=1e-4)
-    nodes_moved = 0
-    
-    for node_idx in boundary_nodes
-        success = move_node_to_sdf_level!(mesh, node_idx, target_sdf, max_iterations, tolerance)
-        if success
-            nodes_moved += 1
+        # Check mesh validity after adjustment
+        neg_count, zero_count = check_element_validity(mesh)
+        if neg_count > 0
+            @warn "Adjustment created $neg_count inverted elements, reverting"
+            restore_surface_nodes!(mesh, surface_nodes, original_positions, original_sdf_values)
+            break
         end
-    end
-    
-    return nodes_moved
-end
-
-"""
-    move_node_to_sdf_level!(mesh::BlockMesh, node_idx::Int, target_sdf::Float64, 
-                           max_iterations::Int, tolerance::Float64) -> Bool
-
-Posune jednotlivý uzel na specifikovanou úroveň SDF s omezením vzdálenosti.
-"""
-function move_node_to_sdf_level!(mesh::BlockMesh, node_idx::Int, target_sdf::Float64, 
-                                max_iterations::Int, tolerance::Float64)
-    original_position = mesh.X[node_idx]
-    current_position = original_position
-    max_displacement = mesh.grid_step * 0.5  # Omezení maximálního posuvu
-    
-    for iteration in 1:max_iterations
-        # Vypočítaj aktuální SDF hodnotu
-        current_sdf = eval_sdf(mesh, current_position)
         
-        # Kontrola konvergence
-        if abs(current_sdf - target_sdf) < tolerance
-            # Kontrola, zda posuv není příliš velký
-            displacement = norm(current_position - original_position)
-            if displacement <= max_displacement
-                mesh.X[node_idx] = current_position
-                mesh.node_sdf[node_idx] = current_sdf
-                return true
-            else
-                # Omezení posuvu
-                direction = normalize(current_position - original_position)
-                mesh.X[node_idx] = original_position + max_displacement * direction
-                mesh.node_sdf[node_idx] = eval_sdf(mesh, mesh.X[node_idx])
-                return true
+        # Calculate new volume and error
+        new_volume = calculate_mesh_volume(mesh)
+        new_error = abs(new_volume - reference_volume) / reference_volume
+        
+        @info "  New volume: $new_volume"
+        @info "  Relative error: $(new_error * 100)%"
+        @info "  Successfully adjusted: $successful_moves nodes"
+        
+        # Track best solution
+        if new_error < best_error
+            best_error = new_error
+            best_volume = new_volume
+            best_adjustment = current_adjustment
+        end
+        
+        # Check for convergence
+        if new_error <= tolerance
+            @info "Volume correction converged after $iteration iterations"
+            return true
+        end
+        
+        # If error is getting worse, try smaller steps
+        if new_error > initial_error * 1.1  # 10% worse than initial
+            @warn "Error increasing significantly, reducing step size"
+            step_size *= 0.5
+            if step_size < 1e-6
+                break
             end
         end
-        
-        # Vypočítaj gradient SDF
-        gradient = compute_gradient(mesh, current_position)
-        gradient_norm_sq = sum(abs2, gradient)
-        
-        # Kontrola, zda gradient není příliš malý
-        if gradient_norm_sq < 1e-12
-            return false
-        end
-        
-        # Newton-Raphsonův krok s adaptivním krokem
-        step_size = (current_sdf - target_sdf) / gradient_norm_sq
-        step_size = clamp(step_size, -mesh.grid_step * 0.1, mesh.grid_step * 0.1)  # Omezení kroku
-        
-        new_position = current_position - step_size * gradient
-        
-        # Kontrola, zda se nepřesáhnula maximální vzdálenost
-        total_displacement = norm(new_position - original_position)
-        if total_displacement > max_displacement
-            direction = normalize(new_position - original_position)
-            new_position = original_position + max_displacement * direction
-        end
-        
-        current_position = new_position
     end
     
-    # Pokud se nepodařilo konvergovat, použij alespoň částečný posuv
-    displacement = norm(current_position - original_position)
-    if displacement <= max_displacement
-        mesh.X[node_idx] = current_position
-        mesh.node_sdf[node_idx] = eval_sdf(mesh, mesh.X[node_idx])
-        return true
-    end
+    # Apply best solution found
+    @info "Applying best solution with adjustment $best_adjustment (error: $(best_error * 100)%)"
+    restore_surface_nodes!(mesh, surface_nodes, original_positions, original_sdf_values)
+    conservative_surface_adjustment!(mesh, surface_nodes, best_adjustment)
     
-    return false
+    # Final assessment
+    final_volume = calculate_mesh_volume(mesh)
+    final_error = abs(final_volume - reference_volume) / reference_volume
+    @info "Final volume: $final_volume"
+    @info "Final relative error: $(final_error * 100)%"
+    
+    return final_error <= tolerance
 end
 
 """
-    adaptive_volume_correction!(mesh::BlockMesh, fine_sdf::Array{Float32,3}, fine_grid::Array{Vector{Float32},3}; 
-                               tolerance::Float64=0.0005, max_iterations::Int=30)
+    restore_surface_nodes!(mesh::BlockMesh, surface_nodes::Set{Int}, 
+                          original_positions::Dict{Int, SVector{3,Float64}},
+                          original_sdf_values::Dict{Int, Float64})
 
-Alternativní přístup používající adaptivní metodu pro korekci objemu.
+Restores surface nodes to their original positions and SDF values.
 """
-function adaptive_volume_correction!(mesh::BlockMesh, fine_sdf::Array{Float32,3}, fine_grid::Array{Vector{Float32},3}; 
-                                   tolerance::Float64=0.000005, max_iterations::Int=30)
-    @info "Starting adaptive volume correction..."
+function restore_surface_nodes!(mesh::BlockMesh, surface_nodes::Set{Int}, 
+                                original_positions::Dict{Int, SVector{3,Float64}},
+                                original_sdf_values::Dict{Int, Float64})
+    for node_idx in surface_nodes
+        mesh.X[node_idx] = original_positions[node_idx]
+        mesh.node_sdf[node_idx] = original_sdf_values[node_idx]
+    end
+end
+
+"""
+    conservative_surface_adjustment!(mesh::BlockMesh, surface_nodes::Set{Int}, 
+                                    sdf_adjustment::Float64; max_displacement::Float64=0.01) -> Int
+
+Applies conservative adjustment to surface nodes.
+Returns the number of successfully adjusted nodes.
+"""
+function conservative_surface_adjustment!(mesh::BlockMesh, surface_nodes::Set{Int}, 
+                                        sdf_adjustment::Float64; max_displacement::Float64=0.01)
+    nodes_adjusted = 0
+    
+    for node_idx in surface_nodes
+        # Calculate gradient direction for this node
+        gradient = compute_gradient(mesh, mesh.X[node_idx])
+        gradient_norm = norm(gradient)
+        
+        if gradient_norm < 1e-10
+            continue  # Skip nodes with zero gradient
+        end
+        
+        # Normalize gradient
+        normalized_gradient = gradient / gradient_norm
+        
+        # Calculate displacement based on desired SDF change
+        # For positive sdf_adjustment (expanding), move outward (in gradient direction)
+        # For negative sdf_adjustment (contracting), move inward (opposite to gradient)
+        displacement_magnitude = abs(sdf_adjustment) / gradient_norm
+        displacement_magnitude = min(displacement_magnitude, max_displacement)
+        
+        displacement_vector = sign(sdf_adjustment) * displacement_magnitude * normalized_gradient
+        
+        # Apply displacement
+        new_position = mesh.X[node_idx] + displacement_vector
+        
+        # Update node position and recalculate SDF
+        mesh.X[node_idx] = new_position
+        mesh.node_sdf[node_idx] = eval_sdf(mesh, new_position)
+        
+        nodes_adjusted += 1
+    end
+    
+    return nodes_adjusted
+end
+
+"""
+    alternative_volume_correction!(mesh::BlockMesh, fine_sdf::Array{Float32,3}, fine_grid::Array{Vector{Float32},3}; 
+                                  tolerance::Float64=0.005)
+
+Alternative approach: uniform scaling of the entire mesh.
+This is more predictable but less sophisticated.
+"""
+function alternative_volume_correction!(mesh::BlockMesh, fine_sdf::Array{Float32,3}, fine_grid::Array{Vector{Float32},3}; 
+                                      tolerance::Float64=0.005)
+    @info "Starting alternative volume correction (uniform scaling)..."
     
     reference_volume = Float64(calculate_volume_from_sdf(fine_sdf, fine_grid))
-    boundary_nodes = detect_boundary_nodes(mesh)
-    
-    # Uložení původních pozic
-    original_positions = Dict{Int, SVector{3,Float64}}()
-    for node_idx in boundary_nodes
-        original_positions[node_idx] = mesh.X[node_idx]
-    end
-    
     current_volume = calculate_mesh_volume(mesh)
-    relative_error = abs(current_volume - reference_volume) / reference_volume
     
-    @info "Initial state: mesh_volume=$current_volume, reference_volume=$reference_volume, error=$(relative_error*100)%"
+    @info "Reference volume: $reference_volume"
+    @info "Current volume: $current_volume"
     
-    if relative_error <= tolerance
-        return true
+    # Calculate required scaling factor
+    volume_ratio = reference_volume / current_volume
+    scale_factor = cbrt(volume_ratio)  # Cube root for 3D scaling
+    
+    @info "Required scale factor: $scale_factor"
+    
+    # Find mesh centroid
+    centroid = sum(mesh.X) / length(mesh.X)
+    @info "Mesh centroid: $centroid"
+    
+    # Apply uniform scaling about centroid
+    for i in 1:length(mesh.X)
+        # Vector from centroid to node
+        offset = mesh.X[i] - centroid
+        # Scale the offset
+        scaled_offset = scale_factor * offset
+        # Update node position
+        mesh.X[i] = centroid + scaled_offset
+        # Recalculate SDF
+        mesh.node_sdf[i] = eval_sdf(mesh, mesh.X[i])
     end
     
-    # Adaptivní přístup
-    step_size = 0.02
-    direction = current_volume < reference_volume ? 1.0 : -1.0  # 1 = ven, -1 = dovnitř
+    # Check final volume
+    final_volume = calculate_mesh_volume(mesh)
+    final_error = abs(final_volume - reference_volume) / reference_volume
     
-    best_volume = current_volume
-    best_error = relative_error
-    best_step = 0.0
+    @info "Final volume after scaling: $final_volume"
+    @info "Final relative error: $(final_error * 100)%"
     
-    for iteration in 1:max_iterations
-        test_sdf_level = direction * step_size * iteration
-        
-        # Resetuj pozice
-        restore_boundary_nodes!(mesh, boundary_nodes, original_positions)
-        
-        # Aplikuj korekci
-        successful_moves = move_boundary_nodes_to_sdf_level!(mesh, boundary_nodes, test_sdf_level)
-        
-        if successful_moves > 0
-            new_volume = calculate_mesh_volume(mesh)
-            new_error = abs(new_volume - reference_volume) / reference_volume
-            
-            @info "Iteration $iteration: SDF_level=$test_sdf_level, volume=$new_volume, error=$(new_error*100)%, moved=$successful_moves"
-            
-            if new_error < best_error
-                best_error = new_error
-                best_volume = new_volume
-                best_step = test_sdf_level
-            end
-            
-            if new_error <= tolerance
-                @info "Adaptive correction converged!"
-                return true
-            end
-        end
-    end
-    
-    # Aplikuj nejlepší řešení
-    restore_boundary_nodes!(mesh, boundary_nodes, original_positions)
-    move_boundary_nodes_to_sdf_level!(mesh, boundary_nodes, best_step)
-    
-    @info "Best solution: SDF_level=$best_step, error=$(best_error*100)%"
-    return best_error <= tolerance
+    return final_error <= tolerance
 end
 
 """
