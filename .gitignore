@@ -12,3 +12,4 @@
 
 !doc/*.png
 !doc/*.img
+.DS_Store
