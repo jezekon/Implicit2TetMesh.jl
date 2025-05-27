@@ -10,9 +10,9 @@ using Implicit2TetMesh.Utils
 
 @testset "Implicit2TetMesh.jl" begin
 
-  RUN_beam = false
+  RUN_beam = true
   RUN_main = false
-  RUN_main_param = true
+  RUN_main_param = false
 
   if RUN_beam
 
@@ -60,6 +60,19 @@ using Implicit2TetMesh.Utils
       remove_inverted_elements!(mesh)
       update_connectivity!(mesh)
       optimize_mesh!(mesh, scheme)
+
+      # Korekce objemu
+      success = correct_mesh_volume!(mesh, fine_sdf, fine_grid)
+      
+      if success
+          @info "Volume correction successful"
+      else
+          @warn "Volume correction did not converge to required tolerance"
+      end
+      
+      # Vyhodnocení přesnosti
+      assess_volume_accuracy(mesh, fine_sdf, fine_grid)
+
       export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme).vtu")
 
       # Apply cutting planes only if they are defined
@@ -71,7 +84,7 @@ using Implicit2TetMesh.Utils
 
       TetMesh_volumes(mesh)
  
-      slice_mesh_with_plane!(mesh, "x", 0.6)
+      slice_mesh_with_plane!(mesh, "x", 0.977, -1)
       export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme)_plane.vtu")
       # assess_mesh_quality(mesh, "mesh_quality")
   end
