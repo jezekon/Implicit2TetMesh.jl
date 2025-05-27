@@ -9,12 +9,12 @@ A Julia package for generating high-quality tetrahedral meshes from implicit geo
 
 ## Features
 
-- **Robust Meshing**: Creates high-quality tetrahedral meshes from implicit surfaces using Implicit Domain Stuffing algorithm
+- **Robust Meshing**: Creates high-quality tetrahedral meshes from implicit surfaces using Isosurface Stuffing algorithm
+- **Multiple Discretization Schemes**: A15 and Schlafli schemes
+- **Volume preservation**: Ability to precisely preserve volume of implicit geometry with support for geometric constraints (bounded planes)
 - **Mesh Optimization**: Includes Laplacian smoothing and adaptive quality-based optimization
-- **Quality Control**: Quality metrics and visualization tools
 - **Geometric Modifications**: Support for cutting planes and boundary refinement
-- **Multiple Discretization Schemes**: A15 and Schlafli schemes for different element patterns
-- **Export Capabilities**: VTK-based visualization with detailed quality metrics
+- **Quality Control**: Quality metrics and visualization tools
 
 ## Function Input
 Main function for generating tetrahedral meshes from SDF data:
