@@ -53,20 +53,14 @@ using Implicit2TetMesh.Utils
       # optimize_mesh!(mesh, scheme)
 
       # Korekce objemu
-      # success = correct_mesh_volume!(mesh, fine_sdf, fine_grid)
-      success = alternative_volume_correction!(mesh, fine_sdf, fine_grid)
-      
-      if success
-          @info "Volume correction successful"
-      else
-          @warn "Volume correction did not converge to required tolerance"
-      end
-      
-      # Vyhodnocení přesnosti
-      assess_volume_accuracy(mesh, fine_sdf, fine_grid)
+      success = correct_mesh_volume!(mesh, fine_sdf, fine_grid, scheme, plane_definitions=plane_definitions)
+      remove_inverted_elements!(mesh)
 
-      # export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme).vtu")
-      export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-volume_modif_$(scheme).vtu")
+      # Vyhodnocení přesnosti
+      # assess_volume_accuracy(mesh, fine_sdf, fine_grid)
+
+      export_mesh_vtu(mesh, "$(taskName)_TriMesh-$(scheme).vtu")
+      # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-volume_modif_$(scheme).vtu")
   end
 
   #     # Apply cutting planes only if they are defined
