@@ -94,218 +94,116 @@ function approximate_planes_gradient(mesh::BlockMesh, p::SVector{3,Float64}, pla
   return SVector{3,Float64}(df_dx, df_dy, df_dz)
 end
 
-
-# Function to move a node to the zero level of planes_sdf
-function warp_node_to_planes_isocontour!(mesh::BlockMesh, node_index::Int, plane_definitions::Vector{PlaneDefinition}, max_iter::Int)
-  tol = mesh.grid_tol
-  current_position = mesh.X[node_index]
-
-  for iter in 1:max_iter
-    # Evaluate planes_sdf at current position
-    f = eval_planes_sdf(mesh, current_position, plane_definitions)
-
-    # If we're close enough to the isosurface, end
-    abs2(f) < tol * tol && break
-
-    # Calculate gradient for displacement direction
-    grad = approximate_planes_gradient(mesh, current_position, plane_definitions)
-    norm_grad_squared = sum(abs2, grad)
-
-    # If gradient is too small, end
-    norm_grad_squared < 1e-16 && break
-
-    # Newton step
-    dp = (f / norm_grad_squared) * grad
-    current_position -= dp
-  end
-
-  # Calculate current planes_sdf value after warping
-  current_sdf = eval_planes_sdf(mesh, current_position, plane_definitions)
-
-  # Update node position and its SDF value
-  mesh.X[node_index] = current_position
-  if abs(current_sdf) < tol * 2
-    mesh.node_sdf[node_index] = 0.0
-  else
-    mesh.node_sdf[node_index] = current_sdf
-  end
-end
-
-
-function warp_node_to_planes_isocontour_new!(mesh::BlockMesh, node_index::Int, plane_definitions::Vector{PlaneDefinition}, max_iter::Int)
-  # Use a tighter tolerance for convergence
-  tol = mesh.grid_tol * 0.01  # Much stricter tolerance
-  current_position = mesh.X[node_index]
-
-  # Track the best position and its SDF value
-  best_position = copy(current_position)
-  best_sdf = eval_planes_sdf(mesh, current_position, plane_definitions)
-  best_sdf_abs = abs(best_sdf)
-
-  # Use adaptive step size with line search
-  for iter in 1:max_iter
-    # Evaluate planes_sdf at current position
-    f = eval_planes_sdf(mesh, current_position, plane_definitions)
-
-    # If we're close enough to the isosurface, end
-    if abs(f) < tol
-      best_position = current_position
-      best_sdf = f
-      break
-    end
-
-    # Calculate gradient for displacement direction
-    grad = approximate_planes_gradient(mesh, current_position, plane_definitions)
-    grad_norm = sqrt(sum(abs2, grad))
-
-    # If gradient is too small, end
-    if grad_norm < 1e-10
-      break
-    end
-
-    # Normalize gradient
-    normalized_grad = grad / grad_norm
-
-    # Base step size - adaptive based on distance
-    step_size = min(abs(f), 0.1 * mesh.grid_tol)
-
-    # Line search with multiple step sizes
-    for alpha in [1.0, 0.5, 0.25, 0.1, 0.01]
-      # Calculate new position with current step size
-      test_position = current_position - alpha * step_size * normalized_grad
-
-      # Evaluate SDF at test position
-      test_sdf = eval_planes_sdf(mesh, test_position, plane_definitions)
-      test_sdf_abs = abs(test_sdf)
-
-      # If this position is better (closer to zero), use it
-      if test_sdf_abs < best_sdf_abs
-        best_position = test_position
-        best_sdf = test_sdf
-        best_sdf_abs = test_sdf_abs
-
-        # If we're very close to the surface, stop line search
-        if test_sdf_abs < tol
-          break
+# Function to identify surface nodes (nodes that belong to boundary faces)
+function find_surface_nodes(mesh::BlockMesh)::Set{Int}
+    # Dictionary to count how many tetrahedra each face belongs to
+    # Key: Set of 3 node indices forming a triangular face
+    # Value: Number of tetrahedra containing this face
+    face_count = Dict{Set{Int}, Int}()
+    
+    # Process each tetrahedron and its 4 triangular faces
+    for tet in mesh.IEN
+        # Each tetrahedron has 4 triangular faces
+        faces = [
+            Set([tet[1], tet[2], tet[3]]),  # Face opposite to node 4
+            Set([tet[1], tet[2], tet[4]]),  # Face opposite to node 3
+            Set([tet[1], tet[3], tet[4]]),  # Face opposite to node 2
+            Set([tet[2], tet[3], tet[4]])   # Face opposite to node 1
+        ]
+        
+        # Count occurrences of each face
+        for face in faces
+            face_count[face] = get(face_count, face, 0) + 1
         end
-      end
     end
-
-    # Update current position to best found
-    current_position = best_position
-
-    # If we're close enough, stop iterations
-    if best_sdf_abs < tol
-      break
+    
+    # Surface faces are those that belong to exactly one tetrahedron
+    surface_faces = [face for (face, count) in face_count if count == 1]
+    
+    # Collect all unique nodes from surface faces
+    surface_nodes = Set{Int}()
+    for face in surface_faces
+        union!(surface_nodes, face)
     end
-
-    # If we aren't making progress anymore, stop
-    if iter > 5 && best_sdf_abs > 0.99 * abs(eval_planes_sdf(mesh, mesh.X[node_index], plane_definitions))
-      break
-    end
-  end
-
-  # Use direct projection for final precision if we have a plane surface
-  # This is especially useful for planar surfaces where we can project directly
-  for def in plane_definitions
-    # For efficiency, only check planes that are close enough
-    if abs(dot(def.normal, best_position - def.point)) < 10 * tol
-      # Project the point directly onto the plane
-      projected_point = best_position - dot(def.normal, best_position - def.point) * def.normal
-
-      # Check if the projected point lies within the bounded plane
-      if is_on_plane(BoundedPlane(def.normal, def.point, def.shape), projected_point)
-        # Use this exact projection
-        best_position = projected_point
-        best_sdf = 0.0  # Exactly on the plane
-        break
-      end
-    end
-  end
-
-  # Update node position and its SDF value
-  mesh.X[node_index] = best_position
-  mesh.node_sdf[node_index] = best_sdf
-
-  # Ensure the SDF is exactly zero if we're very close to the plane
-  if abs(best_sdf) < tol
-    mesh.node_sdf[node_index] = 0.0
-  end
-
-  # No return value - function modifies mesh in-place
+    
+    return surface_nodes
 end
 
+# Simplified function to move a node to the zero level of planes_sdf
+function warp_node_to_planes_isocontour!(mesh::BlockMesh, node_index::Int, plane_definitions::Vector{PlaneDefinition}, max_dist::Float64, max_iter::Int)
+    tol = mesh.grid_tol
+    current_position = mesh.X[node_index]
+    
+    for iter in 1:max_iter
+        # Evaluate planes_sdf at current position
+        f = eval_planes_sdf(mesh, current_position, plane_definitions)
+        
+        # Early return if we're close enough to the plane surface
+        abs2(f) < tol * tol && break
+        
+        # Calculate gradient for displacement direction
+        grad = approximate_planes_gradient(mesh, current_position, plane_definitions)
+        norm_grad_squared = sum(abs2, grad)
+        
+        # Early return if gradient is too small
+        norm_grad_squared < 1e-16 && break
+        
+        # Newton step
+        dp = (f / norm_grad_squared) * grad
+        current_position -= dp
+    end
+    
+    # Check if displacement is within acceptable limits
+    norm_dist = norm(current_position - mesh.X[node_index])
+    
+    if norm_dist <= (max_dist * 2)
+        # Update node position
+        mesh.X[node_index] = current_position
+    end
+end
 
-# Main function for modifying the mesh according to planes_sdf
+# Main function for plane-based mesh warping - ONLY moves SURFACE nodes
 function warp_mesh_by_planes_sdf!(mesh::BlockMesh, plane_definitions::Vector{PlaneDefinition}, warp_param::Float64; max_iter::Int=20)
-  # Check if any plane definitions were provided
-  if isempty(plane_definitions)
-    @info "No plane definitions provided, skipping plane-based warping."
-    return
-  end
-
-  # Calculate the longest edge and then the threshold for displacement - same logic as in the warp! function
-  threshold_sdf = warp_param * mesh.grid_step
-
-  @info "Planes warping: max edge = $max_edge, threshold_sdf = $threshold_sdf"
-
-  # Preparation for warping - find nodes near planes (in one direction)
-  nodes_to_warp = Int[]
-  for i in 1:length(mesh.X)
-    plane_sdf = eval_planes_sdf(mesh, mesh.X[i], plane_definitions)
-    # If the node is close enough to the plane (from both sides), add it to nodes to warp
-    # if abs(plane_sdf) < threshold_sdf
-    # if plane_sdf < threshold_sdf
-    if plane_sdf < 0. # one-side warp
-      push!(nodes_to_warp, i)
+    # Check if any plane definitions were provided
+    if isempty(plane_definitions)
+        @info "No plane definitions provided, skipping plane-based warping."
+        return
     end
-  end
-
-  @info "Found $(length(nodes_to_warp)) nodes near planes for warping"
-
-  # Warp nodes near planes to the zero level
-  for node_idx in nodes_to_warp
-    warp_node_to_planes_isocontour!(mesh, node_idx, plane_definitions, max_iter)
-  end
-
-  # Update mesh topology
-  update_connectivity!(mesh)
-
-  # Remove elements that have all nodes at the zero level or don't have at least one node with positive SDF
-  new_IEN = Vector{Vector{Int64}}()
-  for tet in mesh.IEN
-    # Get SDF values for all nodes of the tetrahedron
-    tet_sdf = [eval_planes_sdf(mesh, mesh.X[i], plane_definitions) for i in tet]
-
-    # Count nodes at zero level
-    zero_nodes = count(x -> abs(x) < mesh.grid_tol, tet_sdf)
-
-    # Count nodes with positive SDF value
-    pos_nodes = count(x -> x > 0, tet_sdf)
-
-    # Keep the tetrahedron only if:
-    # 1. It has at least one node with positive value (relative to planes_sdf)
-    # 2. It doesn't have all nodes at the zero level
-    if pos_nodes > 0 && zero_nodes < 4
-      push!(new_IEN, tet)
+    
+    @info "Warping surface nodes to plane surfaces..."
+    
+    # Calculate threshold for displacement based on warp_param and grid step
+    threshold_sdf = warp_param * mesh.grid_step
+    println("  warp_param = $warp_param, threshold_sdf = $threshold_sdf")
+    
+    # Find all surface nodes (nodes on boundary faces)
+    surface_nodes = find_surface_nodes(mesh)
+    println("  Found $(length(surface_nodes)) surface nodes")
+    
+    # Single pass: warp only surface nodes that are close to planes
+    nodes_warped = 0
+    nodes_checked = 0
+    
+    for node_idx in surface_nodes
+        nodes_checked += 1
+        plane_sdf = eval_planes_sdf(mesh, mesh.X[node_idx], plane_definitions)
+        
+        # Warp surface nodes that are close to planes from either side
+        if abs(plane_sdf) < threshold_sdf
+            warp_node_to_planes_isocontour!(mesh, node_idx, plane_definitions, threshold_sdf, max_iter)
+            nodes_warped += 1
+        end
     end
-  end
-
-  # Update connectivity
-  mesh.IEN = new_IEN
-  @info "After removing unsuitable elements: $(length(mesh.IEN)) tetrahedra"
-
-  # Remove nodes outside the isocontour and elements that contain them
-  # remove_nodes_outside_isocontour!(mesh)
-
-  # Remove any inverted elements (with negative Jacobian determinant)
-  remove_inverted_elements!(mesh)
-
-  # Final topology update
-  update_connectivity!(mesh)
-
-  @info "Mesh modification according to planes_sdf completed"
+    
+    println("  Checked $nodes_checked surface nodes")
+    println("  Warped $nodes_warped surface nodes to plane surfaces")
+    
+    # Only fix potentially inverted elements caused by node movement
+    # Do NOT delete elements or change mesh topology
+    remove_inverted_elements!(mesh)
+    
+    # Update inverse connectivity (INE) to reflect any potential changes
+    create_INE!(mesh)
+    
+    @info "Surface node warping completed. Element count unchanged: $(length(mesh.IEN))"
 end
-
-#TODO: Create a mesh trimming that will support element cutting and subsequent mesh optimization.
-
