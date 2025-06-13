@@ -143,7 +143,7 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     end
 
     if options.correct_volume
-        success = correct_mesh_volume!(mesh, fine_sdf, fine_grid, scheme, plane_definitions=plane_definitions)
+        success = correct_mesh_volume!(mesh, fine_sdf, fine_grid, options.scheme, plane_definitions=options.plane_definitions)
     end
     
     # Step 10: Export the initial mesh to VTK format
@@ -157,8 +157,8 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
         warp_mesh_by_planes_sdf!(mesh, options.plane_definitions, options.warp_param)
         
         # Update mesh connectivity after applying cutting planes
-        @info "Updating mesh connectivity..."
-        update_connectivity!(mesh)
+        # @info "Updating mesh connectivity..."
+        # update_connectivity!(mesh)
         
         # Export the cut mesh to VTK
         cut_output_file = "$(output_prefix)_TriMesh-$(options.scheme)_cut.vtu"
