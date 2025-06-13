@@ -18,6 +18,7 @@ struct MeshGenerationOptions
     quality_export::Bool
     optimize::Bool
     split_elements::Bool
+    correct_volume::Bool
     
     # Inner constructor with defaults
     function MeshGenerationOptions(;
@@ -26,7 +27,8 @@ struct MeshGenerationOptions
         plane_definitions::Union{Vector{PlaneDefinition}, Nothing} = nothing,
         quality_export::Bool = false,
         optimize::Bool = true,
-        split_elements::Bool = true
+        split_elements::Bool = true,
+        correct_volume::Bool = false
     )
         # Validate scheme selection
         if !(scheme in ["A15", "Schlafli"])
@@ -38,7 +40,7 @@ struct MeshGenerationOptions
             error("Invalid warp_param: $warp_param. Must be non-negative (>= 0).")
         end
         
-        new(scheme, warp_param, plane_definitions, quality_export, optimize, split_elements)
+        new(scheme, warp_param, plane_definitions, quality_export, optimize, split_elements, correct_volume)
     end
 end
 
@@ -138,6 +140,10 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
     # Step 9: Optimize the mesh if requested
     if options.optimize
         optimize_mesh!(mesh, options.scheme)
+    end
+
+    if options.correct_volume
+        success = correct_mesh_volume!(mesh, fine_sdf, fine_grid, scheme, plane_definitions=plane_definitions)
     end
     
     # Step 10: Export the initial mesh to VTK format
