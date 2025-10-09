@@ -14,7 +14,7 @@ function slice_ambiguous_tetrahedra!(mesh::BlockMesh)
     sizehint!(new_IEN, length(mesh.IEN)) # Pre-allocate for performance
 
     # Cache for storing cut edge results to avoid duplicate cutting
-    cut_map = Dict{Tuple{Int, Int}, Int}()
+    cut_map = Dict{Tuple{Int,Int},Int}()
 
     original_node_count = length(mesh.X)
     original_tet_count = length(mesh.IEN)
@@ -36,7 +36,9 @@ function slice_ambiguous_tetrahedra!(mesh::BlockMesh)
     mesh.IEN = new_IEN # Update mesh connectivity
     new_tet_count = length(mesh.IEN)
 
-    println("  After trim_spikes slicing: $(new_tet_count) tetrahedra (removed $(original_tet_count - new_tet_count))")
+    println(
+        "  After trim_spikes slicing: $(new_tet_count) tetrahedra (removed $(original_tet_count - new_tet_count))",
+    )
 end
 
 """
@@ -47,10 +49,11 @@ Returns the node index at the intersection point, creating a new node if needed.
 Handles special cases where nodes are already on the surface.
 """
 function cut_edge!(
-    i::Int, j::Int,
+    i::Int,
+    j::Int,
     mesh::BlockMesh,
     node_sdf::Vector{Float64},
-    cut_map::Dict{Tuple{Int, Int}, Int}
+    cut_map::Dict{Tuple{Int,Int},Int},
 )::Int
     # Get SDF values for both endpoints
     sdf_i = node_sdf[i]
@@ -72,7 +75,9 @@ function cut_edge!(
 
     # Ensure nodes are on opposite sides of the isosurface
     if sign(sdf_i) == sign(sdf_j)
-        error("cut_edge! called with nodes on same side of isosurface: i=$i (sdf=$(sdf_i)), j=$j (sdf=$(sdf_j))")
+        error(
+            "cut_edge! called with nodes on same side of isosurface: i=$i (sdf=$(sdf_i)), j=$j (sdf=$(sdf_j))",
+        )
     end
 
     # Canonical edge representation for consistent map lookup
@@ -104,7 +109,7 @@ function cut_edge!(
         new_index = mesh.node_hash[p_key]
         # Ensure its SDF is exactly zero if it's a surface node
         if abs(mesh.node_sdf[new_index]) > tol
-             mesh.node_sdf[new_index] = 0.0
+            mesh.node_sdf[new_index] = 0.0
         end
     else
         # Create new node at the intersection
@@ -131,9 +136,9 @@ function check_tetrahedron_orientation(mesh::BlockMesh, tet::Vector{Int})
         @warn "Invalid tetrahedron indices for orientation check: $tet"
         return false
     end
-    
+
     # Get tetrahedron vertices
-    vertices = [mesh.X[tet[i]] for i in 1:4]
+    vertices = [mesh.X[tet[i]] for i = 1:4]
 
     # Calculate edge vectors from first vertex
     a = vertices[2] - vertices[1]
@@ -155,16 +160,16 @@ Modifies the tetrahedron in-place. Returns true if fixed, false otherwise.
 """
 function fix_tetrahedron_orientation!(mesh::BlockMesh, tet::Vector{Int})
     if length(tet) != 4
-         @warn "Attempting to fix orientation of non-tetrahedron: $tet"
-         return false
+        @warn "Attempting to fix orientation of non-tetrahedron: $tet"
+        return false
     end
-    
+
     if !check_tetrahedron_orientation(mesh, tet)
         # Swap last two vertices to flip orientation
         tet[3], tet[4] = tet[4], tet[3]
         return true  # Orientation was fixed
     end
-    
+
     return false # No fix needed
 end
 
@@ -178,7 +183,7 @@ Uses case-by-case analysis based on SDF sign patterns for robust slicing.
 function apply_stencil_trim_spikes!(
     mesh::BlockMesh,
     tet::Vector{Int64},
-    cut_map::Dict{Tuple{Int, Int}, Int}
+    cut_map::Dict{Tuple{Int,Int},Int},
 )::Vector{Vector{Int64}}
 
     # Get SDF values for tetrahedron nodes
@@ -191,29 +196,46 @@ function apply_stencil_trim_spikes!(
     if all(s -> s < -tol, node_sdf)
         return Vector{Vector{Int64}}()
     end
-    
+
     # Case 2: All nodes inside or on surface (SDF ≥ -tol) - keep original
     if all(s -> s >= -tol, node_sdf)
         return [tet]
     end
-    
+
     # --- General case: Tetrahedron crossing the isosurface ---
     # Sort vertices by SDF value (smallest first)
-    vert_data = [(node_sdf[i], node_indices[i]) for i in 1:4]
+    vert_data = [(node_sdf[i], node_indices[i]) for i = 1:4]
     p = [1, 2, 3, 4]
     flipped = false
-    
+
     # Comparison function for consistent vertex ordering
-    less_than(idx1, idx2) = (vert_data[idx1][1] < vert_data[idx2][1]) || 
-                            (vert_data[idx1][1] == vert_data[idx2][1] && 
-                             vert_data[idx1][2] < vert_data[idx2][2])
+    less_than(idx1, idx2) =
+        (vert_data[idx1][1] < vert_data[idx2][1]) || (
+            vert_data[idx1][1] == vert_data[idx2][1] &&
+            vert_data[idx1][2] < vert_data[idx2][2]
+        )
 
     # Sort vertices while tracking orientation flips
-    if less_than(p[2], p[1]) p[1], p[2] = p[2], p[1]; flipped = !flipped end
-    if less_than(p[4], p[3]) p[3], p[4] = p[4], p[3]; flipped = !flipped end
-    if less_than(p[3], p[1]) p[1], p[3] = p[3], p[1]; flipped = !flipped end
-    if less_than(p[4], p[2]) p[2], p[4] = p[4], p[2]; flipped = !flipped end
-    if less_than(p[3], p[2]) p[2], p[3] = p[3], p[2]; flipped = !flipped end
+    if less_than(p[2], p[1])
+        p[1], p[2] = p[2], p[1];
+        flipped = !flipped
+    end
+    if less_than(p[4], p[3])
+        p[3], p[4] = p[4], p[3];
+        flipped = !flipped
+    end
+    if less_than(p[3], p[1])
+        p[1], p[3] = p[3], p[1];
+        flipped = !flipped
+    end
+    if less_than(p[4], p[2])
+        p[2], p[4] = p[4], p[2];
+        flipped = !flipped
+    end
+    if less_than(p[3], p[2])
+        p[2], p[3] = p[3], p[2];
+        flipped = !flipped
+    end
 
     # Sorted vertices (s has lowest SDF, p has highest)
     s_idx, r_idx, q_idx, p_idx = [vert_data[pi][2] for pi in p]
@@ -239,42 +261,42 @@ function apply_stencil_trim_spikes!(
     function add_tet!(t::Vector{Int})
         # Skip degenerate cases (duplicate vertices)
         if length(Set(t)) != 4
-             # @warn "Degenerate tetrahedron generated (duplicate nodes): $t. Skipping."
-             return
+            # @warn "Degenerate tetrahedron generated (duplicate nodes): $t. Skipping."
+            return
         end
-        
+
         # Fix orientation and add to result
         fix_tetrahedron_orientation!(mesh, t)
         if !check_tetrahedron_orientation(mesh, t)
-             @warn "Tetrahedron $t still has incorrect orientation after fix. Skipping."
-             return
+            @warn "Tetrahedron $t still has incorrect orientation after fix. Skipping."
+            return
         end
         push!(new_tets, t)
     end
 
     # --- Case analysis based on SDF sign patterns ---
-    
+
     # Case ZPPPP: Surface node with all others inside - special handling
     if is_s_zero && !is_r_neg && !is_q_neg && !is_p_neg
         # Subcase ZZZZ: All nodes on surface, check centroid
         if is_r_zero && is_q_zero && is_p_zero
-             centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-             if eval_sdf(mesh, centroid) < -tol
-                  return Vector{Vector{Int64}}() # Discard if centroid outside
-             else
-                  return Vector{Vector{Int64}}() # Discard surface tetrahedra
-             end
+            centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
+            if eval_sdf(mesh, centroid) < -tol
+                return Vector{Vector{Int64}}() # Discard if centroid outside
+            else
+                return Vector{Vector{Int64}}() # Discard surface tetrahedra
+            end
         else # Other Z+++ patterns - discard
-             return Vector{Vector{Int64}}()
+            return Vector{Vector{Int64}}()
         end
 
-    # Case NNNP: Three nodes outside, one inside
+        # Case NNNP: Three nodes outside, one inside
     elseif is_s_neg && is_r_neg && is_q_neg && (is_p_pos || is_p_zero)
         # Cut three edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         qp = cut_edge!(q_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        
+
         # Create one tetrahedron from three cut points and interior node
         if flipped
             add_tet!([rp, sp, qp, p_idx])
@@ -282,14 +304,17 @@ function apply_stencil_trim_spikes!(
             add_tet!([sp, rp, qp, p_idx])
         end
 
-    # Case NPPP: One node outside, three inside
-    elseif is_s_neg && (is_p_pos || is_p_zero) && (is_q_pos || is_q_zero) && (is_r_pos || is_r_zero)
+        # Case NPPP: One node outside, three inside
+    elseif is_s_neg &&
+           (is_p_pos || is_p_zero) &&
+           (is_q_pos || is_q_zero) &&
+           (is_r_pos || is_r_zero)
         if !is_r_neg && !is_q_neg # Confirm r, q, p are interior nodes
             # Cut edges from outside node to each interior node
             sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map)
             sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
             sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-            
+
             # Create three tetrahedra filling the interior region
             if flipped
                 add_tet!([q_idx, r_idx, p_idx, sr])
@@ -301,18 +326,18 @@ function apply_stencil_trim_spikes!(
                 add_tet!([p_idx, sr, sq, sp])
             end
         else
-             @warn "Logic error in NPPP branch: r=$sdf_r, q=$sdf_q, p=$sdf_p"
-             return Vector{Vector{Int64}}()
+            @warn "Logic error in NPPP branch: r=$sdf_r, q=$sdf_q, p=$sdf_p"
+            return Vector{Vector{Int64}}()
         end
 
-    # Case NNPP: Two nodes outside, two inside
+        # Case NNPP: Two nodes outside, two inside
     elseif is_s_neg && is_r_neg && (is_q_pos || is_q_zero) && (is_p_pos || is_p_zero)
         # Cut all four edges crossing the isosurface
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rq = cut_edge!(r_idx, q_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        
+
         # Create three tetrahedra for interior region
         if flipped
             add_tet!([p_idx, rq, q_idx, sq])
@@ -324,47 +349,47 @@ function apply_stencil_trim_spikes!(
             add_tet!([p_idx, sq, rp, rq])
         end
 
-    # Case NZPP: One outside, one on surface, two inside
+        # Case NZPP: One outside, one on surface, two inside
     elseif is_s_neg && is_r_zero && (is_q_pos || is_q_zero) && (is_p_pos || is_p_zero)
         # Cut edges from outside node to interior nodes
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
-        
+
         # Create two tetrahedra
         if flipped
-             add_tet!([q_idx, r_idx, p_idx, sq])
-             add_tet!([p_idx, r_idx, sq, sp])
+            add_tet!([q_idx, r_idx, p_idx, sq])
+            add_tet!([p_idx, r_idx, sq, sp])
         else
-             add_tet!([r_idx, q_idx, p_idx, sq])
-             add_tet!([r_idx, p_idx, sq, sp])
+            add_tet!([r_idx, q_idx, p_idx, sq])
+            add_tet!([r_idx, p_idx, sq, sp])
         end
 
-    # Case NNZP: Two outside, one on surface, one inside
+        # Case NNZP: Two outside, one on surface, one inside
     elseif is_s_neg && is_r_neg && is_q_zero && (is_p_pos || is_p_zero)
         # Cut edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        
+
         # Create one tetrahedron
         if flipped
-             add_tet!([p_idx, q_idx, rp, sp])
+            add_tet!([p_idx, q_idx, rp, sp])
         else
-             add_tet!([q_idx, p_idx, rp, sp])
+            add_tet!([q_idx, p_idx, rp, sp])
         end
 
-    # Case NZZP: One outside, two on surface, one inside
+        # Case NZZP: One outside, two on surface, one inside
     elseif is_s_neg && is_r_zero && is_q_zero && (is_p_pos || is_p_zero)
         # Cut edge from outside node to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        
+
         # Create one tetrahedron
         if flipped
-             add_tet!([q_idx, r_idx, p_idx, sp])
+            add_tet!([q_idx, r_idx, p_idx, sp])
         else
-             add_tet!([r_idx, q_idx, p_idx, sp])
+            add_tet!([r_idx, q_idx, p_idx, sp])
         end
 
-    # Unexpected SDF pattern
+        # Unexpected SDF pattern
     else
         @warn "Unexpected SDF pattern in apply_stencil_trim_spikes!: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p. Indices: s=$s_idx, r=$r_idx, q=$q_idx, p=$p_idx. Tet: $tet. Flipped: $flipped"
         return Vector{Vector{Int64}}() # Discard in case of unexpected pattern
@@ -387,70 +412,75 @@ Elements with negative determinants are fixed by reordering their nodes.
 # Returns
 - Number of elements that were fixed
 """
-function fix_tetrahedra_orientation!(mesh::BlockMesh, tol::Float64=1e-12)
+function fix_tetrahedra_orientation!(mesh::BlockMesh, tol::Float64 = 1e-12)
     fixed_count = 0
     degenerate_count = 0
     failed_count = 0
-    
+
     @info "Checking and fixing tetrahedra orientation..."
-    
+
     for (elem_idx, tet) in enumerate(mesh.IEN)
         # Skip elements with duplicate nodes
         if length(Set(tet)) != 4
             degenerate_count += 1
             continue
         end
-        
+
         # Get vertices of the tetrahedron
         vertices = [mesh.X[node_idx] for node_idx in tet]
-        
+
         # Calculate edge vectors from first vertex
         a = vertices[2] - vertices[1]
         b = vertices[3] - vertices[1]
         c = vertices[4] - vertices[1]
-        
+
         # Calculate Jacobian determinant (6 times the volume)
         det_value = dot(a, cross(b, c))
-        
+
         # Check if element has negative or zero volume
         if det_value <= tol
             # Try to fix by swapping nodes 3 and 4
-            mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] = mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3]
-            
+            mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] =
+                mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3]
+
             # Check if the fix worked
             vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
             a = vertices[2] - vertices[1]
             b = vertices[3] - vertices[1]
             c = vertices[4] - vertices[1]
             new_det = dot(a, cross(b, c))
-            
+
             if new_det > tol
                 fixed_count += 1
             else
                 # If that didn't work, try swapping nodes 1 and 2
-                mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] = mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3] # Restore
-                mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] = mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1]
-                
+                mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] =
+                    mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3] # Restore
+                mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] =
+                    mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1]
+
                 # Check again
                 vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
                 a = vertices[2] - vertices[1]
                 b = vertices[3] - vertices[1]
                 c = vertices[4] - vertices[1]
                 new_det = dot(a, cross(b, c))
-                
+
                 if new_det > tol
                     fixed_count += 1
                 else
                     # Restore and try one more swap
-                    mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] = mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1] # Restore
-                    mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][3] = mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][2]
-                    
+                    mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] =
+                        mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1] # Restore
+                    mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][3] =
+                        mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][2]
+
                     vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
                     a = vertices[2] - vertices[1]
                     b = vertices[3] - vertices[1]
                     c = vertices[4] - vertices[1]
                     new_det = dot(a, cross(b, c))
-                    
+
                     if new_det > tol
                         fixed_count += 1
                     else
@@ -460,15 +490,15 @@ function fix_tetrahedra_orientation!(mesh::BlockMesh, tol::Float64=1e-12)
             end
         end
     end
-    
+
     if degenerate_count > 0
         @warn "Found $degenerate_count elements with duplicate nodes"
     end
-    
+
     if failed_count > 0
         @warn "Failed to fix orientation of $failed_count elements"
     end
-    
+
     @info "Fixed orientation of $fixed_count tetrahedra"
     return fixed_count
 end

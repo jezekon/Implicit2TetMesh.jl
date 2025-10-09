@@ -14,21 +14,21 @@ Configuration options for tetrahedral mesh generation.
 struct MeshGenerationOptions
     scheme::String
     warp_param::Float64
-    plane_definitions::Union{Vector{PlaneDefinition}, Nothing}
+    plane_definitions::Union{Vector{PlaneDefinition},Nothing}
     quality_export::Bool
     optimize::Bool
     split_elements::Bool
     correct_volume::Bool
-    
+
     # Inner constructor with defaults
     function MeshGenerationOptions(;
         scheme::String = "A15",
         warp_param::Float64 = 0.3,
-        plane_definitions::Union{Vector{PlaneDefinition}, Nothing} = nothing,
+        plane_definitions::Union{Vector{PlaneDefinition},Nothing} = nothing,
         quality_export::Bool = false,
         optimize::Bool = true,
         split_elements::Bool = true,
-        correct_volume::Bool = false
+        correct_volume::Bool = false,
     )
         # Validate scheme selection
         if !(scheme in ["A15", "Schlafli"])
@@ -39,8 +39,16 @@ struct MeshGenerationOptions
         if warp_param < 0.0
             error("Invalid warp_param: $warp_param. Must be non-negative (>= 0).")
         end
-        
-        new(scheme, warp_param, plane_definitions, quality_export, optimize, split_elements, correct_volume)
+
+        new(
+            scheme,
+            warp_param,
+            plane_definitions,
+            quality_export,
+            optimize,
+            split_elements,
+            correct_volume,
+        )
     end
 end
 
@@ -96,30 +104,34 @@ mesh export functionality, selecting the appropriate implementation based on the
 function export_mesh(mesh::BlockMesh, filename::String, quality_export::Bool)
     # Select the appropriate export function based on the quality_export flag
     export_func = quality_export ? export_mesh_vtu_quality : export_mesh_vtu
-    
+
     # Call the selected function with the provided arguments
     return export_func(mesh, filename)
 end
 
-function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_prefix::String = "output";
-    options::MeshGenerationOptions = MeshGenerationOptions())
+function generate_tetrahedral_mesh(
+    grid_file::String,
+    sdf_file::String,
+    output_prefix::String = "output";
+    options::MeshGenerationOptions = MeshGenerationOptions(),
+)
     # Step 1: Load data from JLD2 files
     @info "Loading data from $grid_file and $sdf_file..."
     @load grid_file fine_grid
     @load sdf_file fine_sdf
-    
+
     # Step 2: Create the BlockMesh from the loaded data
     mesh = BlockMesh(fine_sdf, fine_grid)
-    
+
     # Step 3: Generate mesh with the chosen discretization scheme
     generate_mesh!(mesh, options.scheme)
-    
+
     # Step 4: Warp nodes to the isocontour (zero level set of SDF)
     warp!(mesh, options.scheme)
-    
+
     # Step 5: Update mesh connectivity (cleanup nodes, merge duplicates)
     update_connectivity!(mesh)
-    
+
     # Step 6: Process the isosurface boundary using the selected method
     if options.split_elements
         slice_ambiguous_tetrahedra!(mesh)
@@ -128,44 +140,50 @@ function generate_tetrahedral_mesh(grid_file::String, sdf_file::String, output_p
         update_connectivity!(mesh)
         adjust_nodes_to_isosurface!(mesh)
     end
-    
+
     # Step 7: Update mesh connectivity again after isosurface processing
     update_connectivity!(mesh)
     remove_inverted_elements!(mesh)
-    
+
     # Step 8: Compute and display tetrahedra volume information
     @info "Computing mesh volumes..."
     TetMesh_volumes(mesh)
-    
+
     # Step 9: Optimize the mesh if requested
     if options.optimize
         optimize_mesh!(mesh, options.scheme)
     end
 
     if options.correct_volume
-        success = correct_mesh_volume!(mesh, fine_sdf, fine_grid, options.scheme, plane_definitions=options.plane_definitions)
+        success = correct_mesh_volume!(
+            mesh,
+            fine_sdf,
+            fine_grid,
+            options.scheme,
+            plane_definitions = options.plane_definitions,
+        )
     end
-    
+
     # Step 10: Export the initial mesh to VTK format
     output_file = "$(output_prefix)_TriMesh-$(options.scheme).vtu"
     @info "Exporting mesh to $output_file..."
     export_mesh(mesh, output_file, options.quality_export)
-    
+
     # Step 11: Apply cutting planes if defined
-    if options.plane_definitions !== nothing && options.warp_param !== 0.
+    if options.plane_definitions !== nothing && options.warp_param !== 0.0
         @info "Applying cutting planes with warp_param = $(options.warp_param)..."
         warp_mesh_by_planes_sdf!(mesh, options.plane_definitions, options.warp_param)
-        
+
         # Update mesh connectivity after applying cutting planes
         # @info "Updating mesh connectivity..."
         # update_connectivity!(mesh)
-        
+
         # Export the cut mesh to VTK
         cut_output_file = "$(output_prefix)_TriMesh-$(options.scheme)_cut.vtu"
         @info "Exporting cut mesh to $cut_output_file..."
         export_mesh(mesh, cut_output_file, options.quality_export)
     end
-    
+
     return mesh
 end
 
