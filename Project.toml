@@ -5,6 +5,7 @@ version = "0.1.0"
 
 [deps]
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+FastGaussQuadrature = "442a2c76-b920-505d-bb47-c5924d526838"
 JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
@@ -16,6 +17,7 @@ WriteVTK = "64499a7a-5c06-52f2-abe2-ccb03c286192"
 
 [compat]
 CairoMakie = "0.13.2"
+FastGaussQuadrature = "1.0.2"
 JLD2 = "0.5.11"
 LinearAlgebra = "1.11.0"
 Printf = "1.11.0"

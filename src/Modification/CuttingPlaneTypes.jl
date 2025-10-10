@@ -36,22 +36,26 @@ struct BoundedPlane
     shape::PlaneShape
     u::Vector{Float64}
     v::Vector{Float64}
-    
+
     # Constructor for calculating basis vectors
-    function BoundedPlane(normal::Vector{Float64}, point::Vector{Float64}, shape::PlaneShape)
+    function BoundedPlane(
+        normal::Vector{Float64},
+        point::Vector{Float64},
+        shape::PlaneShape,
+    )
         # Normalization of the normal vector
         normal = normalize(normal)
-        
+
         # Creating an orthogonal basis in the plane
         # First choose any vector that is not parallel to the normal
         temp = abs(normal[1]) < 0.9 ? [1.0, 0.0, 0.0] : [0.0, 1.0, 0.0]
-        
+
         # Create the first basis vector in the plane using cross product
         u = normalize(cross(normal, temp))
-        
+
         # Create the second basis vector perpendicular to the normal and the first basis vector
         v = normalize(cross(normal, u))
-        
+
         new(normal, point, shape, u, v)
     end
 end

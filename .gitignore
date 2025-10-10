@@ -2,3 +2,14 @@
 *.jld2
 *.vtk
 *.vtu
+*.edge
+*.ele
+*.face
+*.node
+*.smesh
+*.stl
+*.png
+
+!doc/*.png
+!doc/*.img
+.DS_Store
