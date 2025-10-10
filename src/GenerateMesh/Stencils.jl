@@ -65,25 +65,23 @@ function cut_edge!(
 
     # Handle cases where nodes are already on the surface
     if is_i_zero && is_j_zero
-        # Both on surface - return the lower index for consistency
         return min(i, j)
     elseif is_i_zero
-        return i # Node i is already on the surface
+        return i
     elseif is_j_zero
-        return j # Node j is already on the surface
+        return j
     end
 
-    # Ensure nodes are on opposite sides of the isosurface
+    # Ensure nodes are on opposite sides
     if sign(sdf_i) == sign(sdf_j)
         error(
-            "cut_edge! called with nodes on same side of isosurface: i=$i (sdf=$(sdf_i)), j=$j (sdf=$(sdf_j))",
+            "cut_edge! called with nodes on same side: i=$i (sdf=$sdf_i), j=$j (sdf=$sdf_j)",
         )
     end
 
-    # Canonical edge representation for consistent map lookup
+    # Canonical edge representation
     edge = (min(i, j), max(i, j))
 
-    # Check if this edge has already been cut
     if haskey(cut_map, edge)
         return cut_map[edge]
     end
@@ -92,34 +90,9 @@ function cut_edge!(
     pos_i = mesh.X[i]
     pos_j = mesh.X[j]
 
-    # Linear interpolation to find intersection point
-    alpha = sdf_i / (sdf_i - sdf_j)
-    alpha = clamp(alpha, 0.0, 1.0) # Handle numerical imprecision
+    new_index = interpolate_zero(pos_i, pos_j, sdf_i, sdf_j, mesh)
 
-    # Calculate intersection position
-    new_pos = (1.0 - alpha) * pos_i + alpha * pos_j
-
-    # Quantize position for consistent node identification
-    p_key = quantize(new_pos, mesh.grid_tol)
-
-    # Either use existing node or create new one
-    local new_index::Int
-    if haskey(mesh.node_hash, p_key)
-        # Reuse existing node
-        new_index = mesh.node_hash[p_key]
-        # Ensure its SDF is exactly zero if it's a surface node
-        if abs(mesh.node_sdf[new_index]) > tol
-            mesh.node_sdf[new_index] = 0.0
-        end
-    else
-        # Create new node at the intersection
-        push!(mesh.X, new_pos)
-        push!(mesh.node_sdf, 0.0) # Surface node (SDF = 0)
-        new_index = length(mesh.X)
-        mesh.node_hash[p_key] = new_index
-    end
-
-    # Cache result for future edge cuts
+    # Cache result
     cut_map[edge] = new_index
     return new_index
 end
