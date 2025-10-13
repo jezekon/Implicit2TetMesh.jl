@@ -214,11 +214,18 @@ function apply_stencil_trim_spikes!(
     s_idx, r_idx, q_idx, p_idx = [vert_data[pi][2] for pi in p]
     sdf_s, sdf_r, sdf_q, sdf_p = [vert_data[pi][1] for pi in p]
 
+    # Check if SDF values are properly sorted
+    if !(sdf_s <= sdf_r <= sdf_q <= sdf_p)
+        @warn "SDF values not sorted: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p"
+    end
+
     # Classify vertices by SDF sign (N=negative, P=positive, Z=zero)
     is_s_neg = sdf_s < -tol
     is_r_neg = sdf_r < -tol
     is_q_neg = sdf_q < -tol
+    is_p_neg = sdf_p < -tol
 
+    # is_s_pos = sdf_s > tol
     is_p_pos = sdf_p > tol
     is_q_pos = sdf_q > tol
     is_r_pos = sdf_r > tol
@@ -247,24 +254,38 @@ function apply_stencil_trim_spikes!(
         push!(new_tets, t)
     end
 
-    # --- Case analysis based on SDF sign patterns ---
+    #WARN: Algoritmus ořezává elementy které mají jeden uzdel v materiálu a ostatní na hladině
+    # -> ZZZP, NZZP, mooožná NNZP
+    # sdf_s =< sdf_r =< sdf_q =< sdf_p
 
-    # Case ZPPPP: Surface node with all others inside - special handling
+    # --- Case analysis based on SDF sign patterns ---
+    # Case Z???: Surface node with all others on surface or inside
     if is_s_zero && !is_r_neg && !is_q_neg && !is_p_neg
-        # Subcase ZZZZ: All nodes on surface, check centroid
-        if is_r_zero && is_q_zero && is_p_zero
+
+        # Case ZZZZ: All nodes on surface, check if tetrahedron should be kept
+        if is_s_zero && is_r_zero && is_q_zero && is_p_zero
+            # Instead of discarding all surface tetrahedra, keep them if they 
+            # have proper orientation and represent the surface correctly
             centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-            if eval_sdf(mesh, centroid) < -tol
-                return Vector{Vector{Int64}}() # Discard if centroid outside
+            if eval_sdf(mesh, centroid) >= -tol
+                # This tetrahedron represents the surface, keep it
+                println("ZZZZ case!")
+                return [tet]
             else
-                return Vector{Vector{Int64}}() # Discard surface tetrahedra
+                # Discard if centroid is outside
+                return Vector{Vector{Int64}}()
             end
-        else # Other Z+++ patterns - discard
-            return Vector{Vector{Int64}}()
         end
+
+        # Case ZZZP: Three nodes on surface, one inside - keep these tetrahedra
+    elseif is_s_zero && is_r_zero && is_q_zero && is_p_pos
+        println("ZZZP case!")
+        # This tetrahedron represents part of the surface, keep it
+        return [tet]
 
         # Case NNNP: Three nodes outside, one inside
     elseif is_s_neg && is_r_neg && is_q_neg && (is_p_pos || is_p_zero)
+        # println("NNNP case!")
         # Cut three edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
