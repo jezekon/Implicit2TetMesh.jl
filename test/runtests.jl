@@ -43,7 +43,6 @@ using Implicit2TetMesh.Utils
         # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-step_warp$(scheme).vtu")
 
         slice_ambiguous_tetrahedra!(mesh) # Remove elements outside the body
-        # adjust_nodes_to_isosurface!(mesh) # Simple cut of elements to follow the isocontour
         export_mesh_vtu(mesh, "$(taskName)_3-Sliced-$(scheme).vtu")
 
         # update_connectivity!(mesh)
