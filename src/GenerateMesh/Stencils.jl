@@ -147,6 +147,86 @@ function fix_tetrahedron_orientation!(mesh::BlockMesh, tet::Vector{Int})
 end
 
 """
+    warp_node_to_surface(mesh::BlockMesh, position::SVector{3,Float64}, current_sdf::Float64)
+
+Warp a node with negative SDF to the zero isosurface using gradient descent.
+Returns the new position on the surface.
+"""
+function warp_node_to_surface(
+    mesh::BlockMesh,
+    position::SVector{3,Float64},
+    current_sdf::Float64,
+    max_iter::Int = 20,
+)::SVector{3,Float64}
+
+    tol = mesh.grid_tol
+    current_pos = position
+
+    # Newton iteration to find zero level set
+    for iter = 1:max_iter
+        f = eval_sdf(mesh, current_pos)
+
+        # Close enough to surface
+        if abs(f) < tol
+            break
+        end
+
+        # Compute gradient
+        grad = compute_gradient(mesh, current_pos)
+        norm_grad_sq = sum(abs2, grad)
+
+        # Avoid division by zero
+        if norm_grad_sq < 1e-16
+            @warn "Gradient too small during warp, stopping at SDF = $f"
+            break
+        end
+
+        # Newton step: move along gradient toward zero level
+        dp = (f / norm_grad_sq) * grad
+        current_pos -= dp
+    end
+
+    # Verify we reached the surface
+    final_sdf = eval_sdf(mesh, current_pos)
+    if abs(final_sdf) > tol * 100
+        @warn "Warp did not converge to surface: final SDF = $final_sdf"
+    end
+
+    return current_pos
+end
+
+"""
+    add_warped_node!(mesh::BlockMesh, position::SVector{3,Float64}, cut_map::Dict)
+
+Add a new node to the mesh at the given position with SDF = 0.
+Uses cut_map to avoid creating duplicate nodes at the same location.
+"""
+function add_warped_node!(
+    mesh::BlockMesh,
+    position::SVector{3,Float64},
+    cut_map::Dict{Tuple{Int,Int},Int},
+)::Int
+
+    tol = mesh.grid_tol
+
+    # Quantize position to handle numerical precision
+    p_key = quantize(position, tol)
+
+    # Check if node already exists at this location
+    if haskey(mesh.node_hash, p_key)
+        return mesh.node_hash[p_key]
+    end
+
+    # Create new node
+    push!(mesh.X, position)
+    push!(mesh.node_sdf, 0.0)  # Surface node
+    new_index = length(mesh.X)
+    mesh.node_hash[p_key] = new_index
+
+    return new_index
+end
+
+"""
     apply_stencil_trim_spikes!(mesh::BlockMesh, tet::Vector{Int64}, cut_map::Dict{Tuple{Int, Int}, Int})
 
 Apply trimming algorithm to a tetrahedron that crosses the isosurface.
@@ -269,35 +349,71 @@ function apply_stencil_trim_spikes!(
 
     # --- Case analysis based on SDF sign patterns --- (S=<R=<Q=<P)
     if is_s_neg && is_p_zero # NNNZ, NNZZ, NZZZ
-
+        # Compute centroid to check if element should be preserved
         centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-        # println("ZZZZ case, nodes sdf: $(node_sdf)")
         centroid_sdf = eval_sdf(mesh, centroid)
-        if centroid_sdf > 0.0
-            # println("(NNNZ, NNZZ, NZZZ) with positive centroid: $(centroid_sdf)")
 
-            if is_s_neg && is_r_neg && is_q_neg && is_p_zero # (NNNZ)
-            # println("NNNZ")
-            elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero # (NNZZ)
-                # println("NNZZ")
-                # println("positive centroid: $(centroid_sdf)")
-                # println(
-                #     "sdf_s: $(sdf_s); sdf_r: $(sdf_r); sdf_q: $(sdf_q); sdf_p: $(sdf_p)",
-                # )
-                return [tet]
+        # If centroid is inside (positive SDF), we need to handle this carefully
+        if centroid_sdf > tol
+            # Identify which specific case we're in
+            if is_s_neg && is_r_neg && is_q_neg && is_p_zero
+                # NNNZ - three nodes outside, one on surface
+                # This is very thin, likely discard
+                return Vector{Vector{Int64}}()
 
-            elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero # (NZZZ)
-                # println("NZZZ")
-                # println("positive centroid: $(centroid_sdf)")
-                # println(
-                #     "sdf_s: $(sdf_s); sdf_r: $(sdf_r); sdf_q: $(sdf_q); sdf_p: $(sdf_p)",
-                # )
-                return [tet]
+            elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero
+                # NNZZ - two nodes outside, two on surface
+                # Warp negative nodes to surface and create new element
+
+                # Warp both negative nodes to surface
+                s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
+                r_warped = warp_node_to_surface(mesh, mesh.X[r_idx], sdf_r)
+
+                # Add new warped nodes to mesh
+                s_new = add_warped_node!(mesh, s_warped, cut_map)
+                r_new = add_warped_node!(mesh, r_warped, cut_map)
+
+                # Create new tetrahedron with warped nodes
+                new_tet = [s_new, r_new, q_idx, p_idx]
+
+                # Fix orientation if needed
+                fix_tetrahedron_orientation!(mesh, new_tet)
+
+                # Verify orientation
+                if check_tetrahedron_orientation(mesh, new_tet)
+                    return [new_tet]
+                else
+                    @warn "NNZZ warped tetrahedron has bad orientation, discarding"
+                    return Vector{Vector{Int64}}()
+                end
+
+            elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
+                # NZZZ - one node outside, three on surface
+                # Warp the single negative node to surface
+
+                # Warp negative node to surface
+                s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
+
+                # Add new warped node to mesh
+                s_new = add_warped_node!(mesh, s_warped, cut_map)
+
+                # Create new tetrahedron with warped node
+                new_tet = [s_new, r_idx, q_idx, p_idx]
+
+                # Fix orientation if needed
+                fix_tetrahedron_orientation!(mesh, new_tet)
+
+                # Verify orientation
+                if check_tetrahedron_orientation(mesh, new_tet)
+                    return [new_tet]
+                else
+                    @warn "NZZZ warped tetrahedron has bad orientation, discarding"
+                    return Vector{Vector{Int64}}()
+                end
             end
-
         end
 
-        # println("NNNZ, NNZZ, NZZZ")
+        # If centroid is negative or we didn't match specific cases, discard
         return Vector{Vector{Int64}}()
 
         # Case (Z,!N,!N,P): Surface node with all others on surface or inside
