@@ -9,7 +9,6 @@ Configuration options for tetrahedral mesh generation.
 - `plane_definitions::Union{Vector{PlaneDefinition}, Nothing}`: Optional cutting planes (default: nothing)
 - `quality_export::Bool`: Whether to export mesh with quality metrics (default: false)
 - `optimize::Bool`: Whether to perform mesh optimization (default: true)
-- `split_elements::Bool`: Whether to split elements along the isosurface (true) or just move nodes to the isosurface (false) (default: true)
 """
 struct MeshGenerationOptions
     scheme::String
@@ -17,7 +16,6 @@ struct MeshGenerationOptions
     plane_definitions::Union{Vector{PlaneDefinition},Nothing}
     quality_export::Bool
     optimize::Bool
-    split_elements::Bool
     correct_volume::Bool
 
     # Inner constructor with defaults
@@ -27,7 +25,6 @@ struct MeshGenerationOptions
         plane_definitions::Union{Vector{PlaneDefinition},Nothing} = nothing,
         quality_export::Bool = false,
         optimize::Bool = true,
-        split_elements::Bool = true,
         correct_volume::Bool = false,
     )
         # Validate scheme selection
@@ -40,15 +37,7 @@ struct MeshGenerationOptions
             error("Invalid warp_param: $warp_param. Must be non-negative (>= 0).")
         end
 
-        new(
-            scheme,
-            warp_param,
-            plane_definitions,
-            quality_export,
-            optimize,
-            split_elements,
-            correct_volume,
-        )
+        new(scheme, warp_param, plane_definitions, quality_export, optimize, correct_volume)
     end
 end
 
@@ -133,13 +122,7 @@ function generate_tetrahedral_mesh(
     update_connectivity!(mesh)
 
     # Step 6: Process the isosurface boundary using the selected method
-    if options.split_elements
-        slice_ambiguous_tetrahedra!(mesh)
-    else
-        remove_exterior_tetrahedra!(mesh)
-        update_connectivity!(mesh)
-        adjust_nodes_to_isosurface!(mesh)
-    end
+    slice_ambiguous_tetrahedra!(mesh)
 
     # Step 7: Update mesh connectivity again after isosurface processing
     update_connectivity!(mesh)

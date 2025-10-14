@@ -1,0 +1,27 @@
+[SUCCESS] Converged after 318 iterations
+Stiffness matrix assembled with cached unit matrices: 4800 elements
+Applied force [0.0, -1.0, 0.0] distributed over 4 nodes
+Stress calculation complete with variable material properties
+Maximum von Mises stress: 0.3584595701449464 at cell 4760
+[SUCCESS] Optimization completed
+ Final compliance: 0.13304827220851165
+No density data provided, assuming uniform density of 1.0
+ Final volume fraction: 0.3999999999692125
+[SUCCESS] Optimization completed!
+ Final compliance: 0.13304827220851165
+ Iterations: 0
+No density data provided, assuming uniform density of 1.0
+[INFO] Exporting results to VTU format...
+No density data provided, assuming uniform density of 1.0
+[SUCCESS] VTU export completed
+ Main results: cantilever_beam_simp_test_results.vtu
+ Convergence history: cantilever_beam_simp_test_history.vtu
+[SUCCESS] Test completed successfully!
+Test Summary:     | Total     Time
+EasySIMP.jl Tests |     0  5m54.3s
+     Testing EasySIMP tests passed
+
+#_____
+Grid step = 1.
+
+[SUCCESS] Volume fraction: 0.465088
