@@ -166,12 +166,15 @@ function apply_stencil_trim_spikes!(
 
     # --- Special cases handling ---
     # Case 1: All nodes outside (SDF < -tol) - discard tetrahedron
-    if all(s -> s < -tol, node_sdf)
+    if all(s -> s <= -tol, node_sdf)
         return Vector{Vector{Int64}}()
     end
 
-    # Case 2: All nodes inside or on surface (SDF ≥ -tol) - keep original
-    if all(s -> s >= -tol, node_sdf)
+    # TODO: Tady nemůžu mít -tol, možná tak + tol
+    # pak mohu uděat že jeden uzel je kladná a ostatní -tol -> nechám element.
+    #
+    # Case 2: All nodes inside or on surface (SDF ≥ tol) - keep original
+    if all(s -> s >= tol, node_sdf)
         return [tet]
     end
 
@@ -219,6 +222,18 @@ function apply_stencil_trim_spikes!(
         @warn "SDF values not sorted: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p"
     end
 
+    # Case 3: All nodes on surface (abs(SDF) < tol) - keep original
+    if all(s -> abs(s) <= tol, node_sdf)
+        centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
+        if eval_sdf(mesh, centroid) >= -tol
+            # This tetrahedron represents the surface, keep it
+            return [tet]
+        else
+            # Discard if centroid is outside
+            return Vector{Vector{Int64}}()
+        end
+    end
+
     # Classify vertices by SDF sign (N=negative, P=positive, Z=zero)
     is_s_neg = sdf_s < -tol
     is_r_neg = sdf_r < -tol
@@ -254,37 +269,16 @@ function apply_stencil_trim_spikes!(
         push!(new_tets, t)
     end
 
-    #WARN: Algoritmus ořezává elementy které mají jeden uzdel v materiálu a ostatní na hladině
-    # -> ZZZP, NZZP, mooožná NNZP
-    # sdf_s =< sdf_r =< sdf_q =< sdf_p
+    # --- Case analysis based on SDF sign patterns --- (S=<R=<Q=<P)
+    if is_s_neg && is_p_zero # NNNZ, NNZZ, NZZZ
+        return Vector{Vector{Int64}}()
 
-    # --- Case analysis based on SDF sign patterns ---
-    # Case Z???: Surface node with all others on surface or inside
-    if is_s_zero && !is_r_neg && !is_q_neg && !is_p_neg
-
-        # Case ZZZZ: All nodes on surface, check if tetrahedron should be kept
-        if is_s_zero && is_r_zero && is_q_zero && is_p_zero
-            # Instead of discarding all surface tetrahedra, keep them if they 
-            # have proper orientation and represent the surface correctly
-            centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-            if eval_sdf(mesh, centroid) >= -tol
-                # This tetrahedron represents the surface, keep it
-                println("ZZZZ case!")
-                return [tet]
-            else
-                # Discard if centroid is outside
-                return Vector{Vector{Int64}}()
-            end
-        end
-
-        # Case ZZZP: Three nodes on surface, one inside - keep these tetrahedra
-    elseif is_s_zero && is_r_zero && is_q_zero && is_p_pos
-        println("ZZZP case!")
-        # This tetrahedron represents part of the surface, keep it
+        # Case (Z,!N,!N,P): Surface node with all others on surface or inside
+    elseif is_s_zero && !is_r_neg && !is_q_neg && is_p_pos # ZZZP, ZZPP, ZPPP
         return [tet]
 
         # Case NNNP: Three nodes outside, one inside
-    elseif is_s_neg && is_r_neg && is_q_neg && (is_p_pos || is_p_zero)
+    elseif is_s_neg && is_r_neg && is_q_neg && is_p_pos
         # println("NNNP case!")
         # Cut three edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -299,10 +293,8 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NPPP: One node outside, three inside
-    elseif is_s_neg &&
-           (is_p_pos || is_p_zero) &&
-           (is_q_pos || is_q_zero) &&
-           (is_r_pos || is_r_zero)
+    elseif is_s_neg && is_r_pos
+
         if !is_r_neg && !is_q_neg # Confirm r, q, p are interior nodes
             # Cut edges from outside node to each interior node
             sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map)
@@ -325,7 +317,7 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NNPP: Two nodes outside, two inside
-    elseif is_s_neg && is_r_neg && (is_q_pos || is_q_zero) && (is_p_pos || is_p_zero)
+    elseif is_r_neg && is_q_pos
         # Cut all four edges crossing the isosurface
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -344,7 +336,7 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NZPP: One outside, one on surface, two inside
-    elseif is_s_neg && is_r_zero && (is_q_pos || is_q_zero) && (is_p_pos || is_p_zero)
+    elseif is_s_neg && is_r_zero && is_q_pos
         # Cut edges from outside node to interior nodes
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
@@ -359,7 +351,7 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NNZP: Two outside, one on surface, one inside
-    elseif is_s_neg && is_r_neg && is_q_zero && (is_p_pos || is_p_zero)
+    elseif is_r_neg && is_q_zero && is_p_pos
         # Cut edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -372,7 +364,7 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NZZP: One outside, two on surface, one inside
-    elseif is_s_neg && is_r_zero && is_q_zero && (is_p_pos || is_p_zero)
+    elseif is_s_neg && is_r_zero && is_q_zero && is_p_pos
         # Cut edge from outside node to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
 
@@ -383,7 +375,6 @@ function apply_stencil_trim_spikes!(
             add_tet!([r_idx, q_idx, p_idx, sp])
         end
 
-        # Unexpected SDF pattern
     else
         @warn "Unexpected SDF pattern in apply_stencil_trim_spikes!: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p. Indices: s=$s_idx, r=$r_idx, q=$q_idx, p=$p_idx. Tet: $tet. Flipped: $flipped"
         return Vector{Vector{Int64}}() # Discard in case of unexpected pattern
