@@ -65,25 +65,23 @@ function cut_edge!(
 
     # Handle cases where nodes are already on the surface
     if is_i_zero && is_j_zero
-        # Both on surface - return the lower index for consistency
         return min(i, j)
     elseif is_i_zero
-        return i # Node i is already on the surface
+        return i
     elseif is_j_zero
-        return j # Node j is already on the surface
+        return j
     end
 
-    # Ensure nodes are on opposite sides of the isosurface
+    # Ensure nodes are on opposite sides
     if sign(sdf_i) == sign(sdf_j)
         error(
-            "cut_edge! called with nodes on same side of isosurface: i=$i (sdf=$(sdf_i)), j=$j (sdf=$(sdf_j))",
+            "cut_edge! called with nodes on same side: i=$i (sdf=$sdf_i), j=$j (sdf=$sdf_j)",
         )
     end
 
-    # Canonical edge representation for consistent map lookup
+    # Canonical edge representation
     edge = (min(i, j), max(i, j))
 
-    # Check if this edge has already been cut
     if haskey(cut_map, edge)
         return cut_map[edge]
     end
@@ -92,34 +90,9 @@ function cut_edge!(
     pos_i = mesh.X[i]
     pos_j = mesh.X[j]
 
-    # Linear interpolation to find intersection point
-    alpha = sdf_i / (sdf_i - sdf_j)
-    alpha = clamp(alpha, 0.0, 1.0) # Handle numerical imprecision
+    new_index = interpolate_zero(pos_i, pos_j, sdf_i, sdf_j, mesh)
 
-    # Calculate intersection position
-    new_pos = (1.0 - alpha) * pos_i + alpha * pos_j
-
-    # Quantize position for consistent node identification
-    p_key = quantize(new_pos, mesh.grid_tol)
-
-    # Either use existing node or create new one
-    local new_index::Int
-    if haskey(mesh.node_hash, p_key)
-        # Reuse existing node
-        new_index = mesh.node_hash[p_key]
-        # Ensure its SDF is exactly zero if it's a surface node
-        if abs(mesh.node_sdf[new_index]) > tol
-            mesh.node_sdf[new_index] = 0.0
-        end
-    else
-        # Create new node at the intersection
-        push!(mesh.X, new_pos)
-        push!(mesh.node_sdf, 0.0) # Surface node (SDF = 0)
-        new_index = length(mesh.X)
-        mesh.node_hash[p_key] = new_index
-    end
-
-    # Cache result for future edge cuts
+    # Cache result
     cut_map[edge] = new_index
     return new_index
 end
@@ -174,6 +147,86 @@ function fix_tetrahedron_orientation!(mesh::BlockMesh, tet::Vector{Int})
 end
 
 """
+    warp_node_to_surface(mesh::BlockMesh, position::SVector{3,Float64}, current_sdf::Float64)
+
+Warp a node with negative SDF to the zero isosurface using gradient descent.
+Returns the new position on the surface.
+"""
+function warp_node_to_surface(
+    mesh::BlockMesh,
+    position::SVector{3,Float64},
+    current_sdf::Float64,
+    max_iter::Int = 20,
+)::SVector{3,Float64}
+
+    tol = mesh.grid_tol
+    current_pos = position
+
+    # Newton iteration to find zero level set
+    for iter = 1:max_iter
+        f = eval_sdf(mesh, current_pos)
+
+        # Close enough to surface
+        if abs(f) < tol
+            break
+        end
+
+        # Compute gradient
+        grad = compute_gradient(mesh, current_pos)
+        norm_grad_sq = sum(abs2, grad)
+
+        # Avoid division by zero
+        if norm_grad_sq < 1e-16
+            @warn "Gradient too small during warp, stopping at SDF = $f"
+            break
+        end
+
+        # Newton step: move along gradient toward zero level
+        dp = (f / norm_grad_sq) * grad
+        current_pos -= dp
+    end
+
+    # Verify we reached the surface
+    final_sdf = eval_sdf(mesh, current_pos)
+    if abs(final_sdf) > tol * 100
+        @warn "Warp did not converge to surface: final SDF = $final_sdf"
+    end
+
+    return current_pos
+end
+
+"""
+    add_warped_node!(mesh::BlockMesh, position::SVector{3,Float64}, cut_map::Dict)
+
+Add a new node to the mesh at the given position with SDF = 0.
+Uses cut_map to avoid creating duplicate nodes at the same location.
+"""
+function add_warped_node!(
+    mesh::BlockMesh,
+    position::SVector{3,Float64},
+    cut_map::Dict{Tuple{Int,Int},Int},
+)::Int
+
+    tol = mesh.grid_tol
+
+    # Quantize position to handle numerical precision
+    p_key = quantize(position, tol)
+
+    # Check if node already exists at this location
+    if haskey(mesh.node_hash, p_key)
+        return mesh.node_hash[p_key]
+    end
+
+    # Create new node
+    push!(mesh.X, position)
+    push!(mesh.node_sdf, 0.0)  # Surface node
+    new_index = length(mesh.X)
+    mesh.node_hash[p_key] = new_index
+
+    return new_index
+end
+
+"""
     apply_stencil_trim_spikes!(mesh::BlockMesh, tet::Vector{Int64}, cut_map::Dict{Tuple{Int, Int}, Int})
 
 Apply trimming algorithm to a tetrahedron that crosses the isosurface.
@@ -192,13 +245,13 @@ function apply_stencil_trim_spikes!(
     tol = mesh.grid_tol
 
     # --- Special cases handling ---
-    # Case 1: All nodes outside (SDF < -tol) - discard tetrahedron
+    # Case 1: All nodes outside (SDF < -tol) - discard tetrahedron (NNNN case)
     if all(s -> s < -tol, node_sdf)
         return Vector{Vector{Int64}}()
     end
 
-    # Case 2: All nodes inside or on surface (SDF ≥ -tol) - keep original
-    if all(s -> s >= -tol, node_sdf)
+    # Case 2: All nodes inside or on surface (SDF ≥ tol) - keep original (PPPP case)
+    if all(s -> s > tol, node_sdf)
         return [tet]
     end
 
@@ -241,11 +294,31 @@ function apply_stencil_trim_spikes!(
     s_idx, r_idx, q_idx, p_idx = [vert_data[pi][2] for pi in p]
     sdf_s, sdf_r, sdf_q, sdf_p = [vert_data[pi][1] for pi in p]
 
+    # Check if SDF values are properly sorted
+    if !(sdf_s <= sdf_r <= sdf_q <= sdf_p)
+        @warn "SDF values not sorted: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p"
+    end
+
+    # Case 3: All nodes on surface (abs(SDF) < tol) - keep original (ZZZZ case)
+    if all(s -> abs(s) <= tol, node_sdf)
+        centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
+        # println("ZZZZ case, nodes sdf: $(node_sdf)")
+        if eval_sdf(mesh, centroid) > 0.0
+            # This tetrahedron represents the surface, keep it
+            return [tet]
+        else
+            # Discard if centroid is outside
+            return Vector{Vector{Int64}}()
+        end
+    end
+
     # Classify vertices by SDF sign (N=negative, P=positive, Z=zero)
     is_s_neg = sdf_s < -tol
     is_r_neg = sdf_r < -tol
     is_q_neg = sdf_q < -tol
+    is_p_neg = sdf_p < -tol
 
+    # is_s_pos = sdf_s > tol
     is_p_pos = sdf_p > tol
     is_q_pos = sdf_q > tol
     is_r_pos = sdf_r > tol
@@ -274,24 +347,83 @@ function apply_stencil_trim_spikes!(
         push!(new_tets, t)
     end
 
-    # --- Case analysis based on SDF sign patterns ---
+    # --- Case analysis based on SDF sign patterns --- (S=<R=<Q=<P)
+    if is_s_neg && is_p_zero # NNNZ, NNZZ, NZZZ
+        # Compute centroid to check if element should be preserved
+        centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
+        centroid_sdf = eval_sdf(mesh, centroid)
 
-    # Case ZPPPP: Surface node with all others inside - special handling
-    if is_s_zero && !is_r_neg && !is_q_neg && !is_p_neg
-        # Subcase ZZZZ: All nodes on surface, check centroid
-        if is_r_zero && is_q_zero && is_p_zero
-            centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-            if eval_sdf(mesh, centroid) < -tol
-                return Vector{Vector{Int64}}() # Discard if centroid outside
-            else
-                return Vector{Vector{Int64}}() # Discard surface tetrahedra
+        # If centroid is inside (positive SDF), we need to handle this carefully
+        if centroid_sdf > tol
+            # Identify which specific case we're in
+            if is_s_neg && is_r_neg && is_q_neg && is_p_zero
+                # NNNZ - three nodes outside, one on surface
+                # This is very thin, likely discard
+                return Vector{Vector{Int64}}()
+
+            elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero
+                # NNZZ - two nodes outside, two on surface
+                # Warp negative nodes to surface and create new element
+
+                # Warp both negative nodes to surface
+                s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
+                r_warped = warp_node_to_surface(mesh, mesh.X[r_idx], sdf_r)
+
+                # Add new warped nodes to mesh
+                s_new = add_warped_node!(mesh, s_warped, cut_map)
+                r_new = add_warped_node!(mesh, r_warped, cut_map)
+
+                # Create new tetrahedron with warped nodes
+                new_tet = [s_new, r_new, q_idx, p_idx]
+
+                # Fix orientation if needed
+                fix_tetrahedron_orientation!(mesh, new_tet)
+
+                # Verify orientation
+                if check_tetrahedron_orientation(mesh, new_tet)
+                    return [new_tet]
+                else
+                    @warn "NNZZ warped tetrahedron has bad orientation, discarding"
+                    return Vector{Vector{Int64}}()
+                end
+
+            elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
+                # NZZZ - one node outside, three on surface
+                # Warp the single negative node to surface
+
+                # Warp negative node to surface
+                s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
+
+                # Add new warped node to mesh
+                s_new = add_warped_node!(mesh, s_warped, cut_map)
+
+                # Create new tetrahedron with warped node
+                new_tet = [s_new, r_idx, q_idx, p_idx]
+
+                # Fix orientation if needed
+                fix_tetrahedron_orientation!(mesh, new_tet)
+
+                # Verify orientation
+                if check_tetrahedron_orientation(mesh, new_tet)
+                    return [new_tet]
+                else
+                    @warn "NZZZ warped tetrahedron has bad orientation, discarding"
+                    return Vector{Vector{Int64}}()
+                end
             end
-        else # Other Z+++ patterns - discard
-            return Vector{Vector{Int64}}()
         end
 
+        # If centroid is negative or we didn't match specific cases, discard
+        return Vector{Vector{Int64}}()
+
+        # Case (Z,!N,!N,P): Surface node with all others on surface or inside
+    elseif is_s_zero && !is_r_neg && !is_q_neg && is_p_pos # ZZZP, ZZPP, ZPPP
+        # println("ZZZP, ZZPP, ZPPP")
+        return [tet]
+
         # Case NNNP: Three nodes outside, one inside
-    elseif is_s_neg && is_r_neg && is_q_neg && (is_p_pos || is_p_zero)
+    elseif is_s_neg && is_r_neg && is_q_neg && is_p_pos
+        # println("NNNP")
         # Cut three edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -305,10 +437,8 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NPPP: One node outside, three inside
-    elseif is_s_neg &&
-           (is_p_pos || is_p_zero) &&
-           (is_q_pos || is_q_zero) &&
-           (is_r_pos || is_r_zero)
+    elseif is_s_neg && is_r_pos
+        # println("NPPP")
         if !is_r_neg && !is_q_neg # Confirm r, q, p are interior nodes
             # Cut edges from outside node to each interior node
             sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map)
@@ -331,7 +461,8 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NNPP: Two nodes outside, two inside
-    elseif is_s_neg && is_r_neg && (is_q_pos || is_q_zero) && (is_p_pos || is_p_zero)
+    elseif is_r_neg && is_q_pos
+        # println("NNPP")
         # Cut all four edges crossing the isosurface
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -350,7 +481,8 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NZPP: One outside, one on surface, two inside
-    elseif is_s_neg && is_r_zero && (is_q_pos || is_q_zero) && (is_p_pos || is_p_zero)
+    elseif is_s_neg && is_r_zero && is_q_pos
+        # println("NZPP")
         # Cut edges from outside node to interior nodes
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
@@ -365,7 +497,8 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NNZP: Two outside, one on surface, one inside
-    elseif is_s_neg && is_r_neg && is_q_zero && (is_p_pos || is_p_zero)
+    elseif is_r_neg && is_q_zero && is_p_pos
+        # println("NNZP")
         # Cut edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -378,7 +511,8 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NZZP: One outside, two on surface, one inside
-    elseif is_s_neg && is_r_zero && is_q_zero && (is_p_pos || is_p_zero)
+    elseif is_s_neg && is_r_zero && is_q_zero && is_p_pos
+        # println("NZZP")
         # Cut edge from outside node to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
 
@@ -389,7 +523,6 @@ function apply_stencil_trim_spikes!(
             add_tet!([r_idx, q_idx, p_idx, sp])
         end
 
-        # Unexpected SDF pattern
     else
         @warn "Unexpected SDF pattern in apply_stencil_trim_spikes!: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p. Indices: s=$s_idx, r=$r_idx, q=$q_idx, p=$p_idx. Tet: $tet. Flipped: $flipped"
         return Vector{Vector{Int64}}() # Discard in case of unexpected pattern
