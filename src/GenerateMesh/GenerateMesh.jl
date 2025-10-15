@@ -8,11 +8,9 @@ export generate_mesh!,
     export_mesh_vtu_quality,
     warp_node_to_isocontour!,
     longest_edge,
-    remove_nodes_outside_isocontour!,
     remove_inverted_elements!,
     cleanup_unused_nodes!,
     create_INE!,
-    remove_exterior_tetrahedra!,
     fix_tetrahedra_orientation!
 
 
