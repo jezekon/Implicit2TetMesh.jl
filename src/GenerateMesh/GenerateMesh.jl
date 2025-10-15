@@ -10,8 +10,7 @@ export generate_mesh!,
     longest_edge,
     remove_inverted_elements!,
     cleanup_unused_nodes!,
-    create_INE!,
-    fix_tetrahedra_orientation!
+    create_INE!
 
 
 using Statistics
@@ -25,7 +24,6 @@ using Implicit2TetMesh.Fundamentals
 include("Schemes/A15Scheme.jl")
 include("Schemes/SchlafliScheme.jl")
 include("TetGenerator.jl")
-include("AdjustNodesToIso.jl")
 include("Stencils.jl")
 include("ExportMesh.jl")
 
