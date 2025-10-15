@@ -246,7 +246,7 @@ function warp_node_to_surface(
     # Verify we reached the surface
     final_sdf = eval_sdf(mesh, current_pos)
     if abs(final_sdf) > tol * 100
-        @warn "Warp did not converge to surface: final SDF = $final_sdf"
+        # @warn "Warp did not converge to surface: final SDF = $final_sdf"
     end
 
     return current_pos
@@ -301,9 +301,22 @@ function apply_stencil_trim_spikes!(
     node_sdf = [mesh.node_sdf[idx] for idx in node_indices]
     tol = mesh.grid_tol
 
+    # DIAGNOSTIC: Check if this is problematic BEFORE any processing
+    centroid_check = sum(mesh.X[idx] for idx in node_indices) / 4.0
+    centroid_sdf_check = eval_sdf(mesh, centroid_check)
+    is_problematic = centroid_sdf_check > tol && any(s -> s < -tol, node_sdf)
+
+    if is_problematic
+        println("\n=== PROBLEMATIC ELEMENT ENTERING ===")
+        println("Node indices: $node_indices")
+        println("Node SDFs (unsorted): $node_sdf")
+        println("Centroid SDF: $centroid_sdf_check")
+    end
+
     # --- Special cases handling ---
     # Case 1: All nodes outside (SDF < -tol) - discard tetrahedron (NNNN case)
     if all(s -> s < -tol, node_sdf)
+        is_problematic && println("case NNNN")
         return Vector{Vector{Int64}}()
     end
 
@@ -385,6 +398,17 @@ function apply_stencil_trim_spikes!(
     is_q_zero = abs(sdf_q) <= tol
     is_p_zero = abs(sdf_p) <= tol
 
+    if is_problematic
+        println("After sorting: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p")
+        println(
+            "Classifications: s_neg=$is_s_neg, r_neg=$is_r_neg, q_neg=$is_q_neg, p_neg=$is_p_neg",
+        )
+        println(
+            "                 s_zero=$is_s_zero, r_zero=$is_r_zero, q_zero=$is_q_zero, p_zero=$is_p_zero",
+        )
+        println("                 r_pos=$is_r_pos, q_pos=$is_q_pos, p_pos=$is_p_pos")
+    end
+
     new_tets = Vector{Vector{Int64}}()
 
     # Helper function to add tetrahedron with orientation check
@@ -414,11 +438,13 @@ function apply_stencil_trim_spikes!(
         if centroid_sdf > tol
             # Identify which specific case we're in
             if is_s_neg && is_r_neg && is_q_neg && is_p_zero
+                is_problematic && println("  -> NNNZ case")
                 # NNNZ - three nodes outside, one on surface
                 # This is very thin, likely discard
                 return Vector{Vector{Int64}}()
 
             elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero
+                is_problematic && println("  -> NNZZ case")
                 # NNZZ - two nodes outside, two on surface
                 # Warp negative nodes to surface and create new element
 
@@ -445,6 +471,7 @@ function apply_stencil_trim_spikes!(
                 end
 
             elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
+                is_problematic && println("  -> NZZZ case")
                 # NZZZ - one node outside, three on surface
                 # Warp the single negative node to surface
 
@@ -467,6 +494,9 @@ function apply_stencil_trim_spikes!(
                     @warn "NZZZ warped tetrahedron has bad orientation, discarding"
                     return Vector{Vector{Int64}}()
                 end
+            else
+                println("  -> NO MATCH! This is the problem!")
+
             end
         end
 
@@ -480,7 +510,7 @@ function apply_stencil_trim_spikes!(
 
         # Case NNNP: Three nodes outside, one inside
     elseif is_s_neg && is_r_neg && is_q_neg && is_p_pos
-        # println("NNNP")
+        is_problematic && println("NNNP")
         # Cut three edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -495,7 +525,7 @@ function apply_stencil_trim_spikes!(
 
         # Case NPPP: One node outside, three inside
     elseif is_s_neg && is_r_pos
-        # println("NPPP")
+        is_problematic && println("NPPP")
         if !is_r_neg && !is_q_neg # Confirm r, q, p are interior nodes
             # Cut edges from outside node to each interior node
             sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map)
@@ -519,7 +549,7 @@ function apply_stencil_trim_spikes!(
 
         # Case NNPP: Two nodes outside, two inside
     elseif is_r_neg && is_q_pos
-        # println("NNPP")
+        is_problematic && println("NNPP")
         # Cut all four edges crossing the isosurface
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -539,7 +569,7 @@ function apply_stencil_trim_spikes!(
 
         # Case NZPP: One outside, one on surface, two inside
     elseif is_s_neg && is_r_zero && is_q_pos
-        # println("NZPP")
+        is_problematic && println("NZPP")
         # Cut edges from outside node to interior nodes
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
@@ -555,7 +585,7 @@ function apply_stencil_trim_spikes!(
 
         # Case NNZP: Two outside, one on surface, one inside
     elseif is_r_neg && is_q_zero && is_p_pos
-        # println("NNZP")
+        is_problematic && println("NNZP")
         # Cut edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -569,7 +599,7 @@ function apply_stencil_trim_spikes!(
 
         # Case NZZP: One outside, two on surface, one inside
     elseif is_s_neg && is_r_zero && is_q_zero && is_p_pos
-        # println("NZZP")
+        is_problematic && println("NZZP")
         # Cut edge from outside node to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
 
