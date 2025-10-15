@@ -41,6 +41,63 @@ function slice_ambiguous_tetrahedra!(mesh::BlockMesh)
     )
 end
 
+# ----------------------------
+# Helper function: Linear interpolation of the intersection with the zero level of SDF
+# ----------------------------
+function interpolate_zero(
+    p1::SVector{3,Float64},
+    p2::SVector{3,Float64},
+    f1::Float64,
+    f2::Float64,
+    mesh::BlockMesh;
+    tol = mesh.grid_tol,
+    max_iter = 20,
+)::Int64
+    # coords of positive point, coords of negative point, sdf of positive point, sdf of negative point
+
+    pos1 = f1 >= -tol
+    pos2 = f2 >= -tol
+    # If both points have the same polarity according to tolerance, interpolation cannot be done correctly.
+    if pos1 == pos2
+        error(
+            "Both points have the same 'tolerance' polarity; one point must be close to zero (positive) and the other significantly negative.",
+        )
+    end
+
+    # Initialize interval: low and high - assuming p1 and p2 are ordered by f
+    low, high = p1, p2
+    f_low, f_high = f1, f2
+    mid = low
+    for iter = 1:max_iter
+        mid = (low + high) / 2.0
+        f_mid = eval_sdf(mesh, mid)
+        # If the value is close enough to zero, end the iteration
+        if abs(f_mid) < tol
+            break
+        end
+        # Update one of the interval endpoints according to the sign of f_mid
+        if sign(f_mid) == sign(f_low)
+            low, f_low = mid, f_mid
+        else
+            high, f_high = mid, f_mid
+        end
+    end
+
+    # Quantize the found point to avoid duplicates in the hashtable
+    p_key = quantize(mid, tol)
+    sdf_of_iterp_point = eval_sdf(mesh, SVector{3,Float64}(p_key))
+    # println("check interp sdf: ", sdf_of_iterp_point)
+    if haskey(mesh.node_hash, p_key)
+        return mesh.node_hash[p_key]
+    else
+        push!(mesh.X, mid)
+        push!(mesh.node_sdf, 0.0)  # or set exactly to 0
+        new_index = length(mesh.X)
+        mesh.node_hash[p_key] = new_index
+        return new_index
+    end
+end
+
 """
     cut_edge!(i::Int, j::Int, mesh::BlockMesh, node_sdf::Vector{Float64}, cut_map::Dict{Tuple{Int, Int}, Int})::Int
 
@@ -531,107 +588,150 @@ function apply_stencil_trim_spikes!(
     return new_tets
 end
 
+const RED = "\e[31m"
+const BOLD = "\e[1m"
+const RESET = "\e[0m"
+
 """
-    fix_tetrahedra_orientation!(mesh::BlockMesh)
+    remove_inverted_elements!(mesh::BlockMesh)
 
-Checks and fixes the orientation of all tetrahedral elements in the mesh
-by ensuring each element has a positive Jacobian determinant (positive volume).
-Elements with negative determinants are fixed by reordering their nodes.
+Improves mesh quality by fixing inverted tetrahedra and removing degenerate elements.
 
-# Arguments
-- `mesh::BlockMesh`: The mesh to check and fix
-- `tol::Float64`: Tolerance for considering volume as zero (default: 1e-12)
+This function:
+1. Attempts to fix elements with negative Jacobian determinant (inverted elements)
+   by reordering their vertices to achieve positive orientation
+2. Removes elements with near-zero volume (degenerate elements)
+3. Updates mesh connectivity to remove orphaned nodes
+4. Rebuilds the inverse node-to-element connectivity (INE)
 
-# Returns
-- Number of elements that were fixed
+Returns the modified mesh.
 """
-function fix_tetrahedra_orientation!(mesh::BlockMesh, tol::Float64 = 1e-12)
-    fixed_count = 0
-    degenerate_count = 0
-    failed_count = 0
+function remove_inverted_elements!(mesh::BlockMesh)
+    @info "Fixing elements orientation..."
+    # Set tolerance for identifying near-zero volumes
+    volume_tolerance = mesh.grid_tol * 1e-6
 
-    @info "Checking and fixing tetrahedra orientation..."
+    # Track statistics for reporting
+    fixed_elements = 0
+    failed_fixes = 0
+    zero_volume_elements = 0
+
+    # Process elements: fix inverted elements, remove near-zero volume elements
+    valid_elements = Vector{Vector{Int}}()
+    sizehint!(valid_elements, length(mesh.IEN))
 
     for (elem_idx, tet) in enumerate(mesh.IEN)
-        # Skip elements with duplicate nodes
+        # Skip degenerate elements with duplicate vertices
         if length(Set(tet)) != 4
-            degenerate_count += 1
+            zero_volume_elements += 1
             continue
         end
 
-        # Get vertices of the tetrahedron
-        vertices = [mesh.X[node_idx] for node_idx in tet]
-
-        # Calculate edge vectors from first vertex
+        # Calculate determinant (proportional to signed volume)
+        vertices = SVector{4,SVector{3,Float64}}(
+            mesh.X[tet[1]],
+            mesh.X[tet[2]],
+            mesh.X[tet[3]],
+            mesh.X[tet[4]],
+        )
         a = vertices[2] - vertices[1]
         b = vertices[3] - vertices[1]
         c = vertices[4] - vertices[1]
-
-        # Calculate Jacobian determinant (6 times the volume)
         det_value = dot(a, cross(b, c))
 
-        # Check if element has negative or zero volume
-        if det_value <= tol
-            # Try to fix by swapping nodes 3 and 4
-            mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] =
-                mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3]
+        # Remove elements with near-zero volume
+        if abs(det_value) <= volume_tolerance
+            zero_volume_elements += 1
+            continue
+        end
 
-            # Check if the fix worked
-            vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
-            a = vertices[2] - vertices[1]
-            b = vertices[3] - vertices[1]
-            c = vertices[4] - vertices[1]
-            new_det = dot(a, cross(b, c))
+        # Fix elements with negative determinant
+        if det_value < 0
+            # Strategy 1: Swap vertices 3 and 4
+            tet_copy = copy(tet)
+            tet_copy[3], tet_copy[4] = tet_copy[4], tet_copy[3]
 
-            if new_det > tol
-                fixed_count += 1
-            else
-                # If that didn't work, try swapping nodes 1 and 2
-                mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] =
-                    mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3] # Restore
-                mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] =
-                    mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1]
+            # Check if fix worked
+            new_vertices = SVector{4,SVector{3,Float64}}(
+                mesh.X[tet_copy[1]],
+                mesh.X[tet_copy[2]],
+                mesh.X[tet_copy[3]],
+                mesh.X[tet_copy[4]],
+            )
+            new_a = new_vertices[2] - new_vertices[1]
+            new_b = new_vertices[3] - new_vertices[1]
+            new_c = new_vertices[4] - new_vertices[1]
+            new_det = dot(new_a, cross(new_b, new_c))
 
-                # Check again
-                vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
-                a = vertices[2] - vertices[1]
-                b = vertices[3] - vertices[1]
-                c = vertices[4] - vertices[1]
-                new_det = dot(a, cross(b, c))
-
-                if new_det > tol
-                    fixed_count += 1
-                else
-                    # Restore and try one more swap
-                    mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] =
-                        mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1] # Restore
-                    mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][3] =
-                        mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][2]
-
-                    vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
-                    a = vertices[2] - vertices[1]
-                    b = vertices[3] - vertices[1]
-                    c = vertices[4] - vertices[1]
-                    new_det = dot(a, cross(b, c))
-
-                    if new_det > tol
-                        fixed_count += 1
-                    else
-                        failed_count += 1
-                    end
-                end
+            if new_det > volume_tolerance
+                # Fix successful - element has positive volume and is not near-zero
+                push!(valid_elements, tet_copy)
+                fixed_elements += 1
+                continue
             end
+
+            # Strategy 2: Swap vertices 1 and 2
+            tet_copy = copy(tet)
+            tet_copy[1], tet_copy[2] = tet_copy[2], tet_copy[1]
+
+            new_vertices = SVector{4,SVector{3,Float64}}(
+                mesh.X[tet_copy[1]],
+                mesh.X[tet_copy[2]],
+                mesh.X[tet_copy[3]],
+                mesh.X[tet_copy[4]],
+            )
+            new_a = new_vertices[2] - new_vertices[1]
+            new_b = new_vertices[3] - new_vertices[1]
+            new_c = new_vertices[4] - new_vertices[1]
+            new_det = dot(new_a, cross(new_b, new_c))
+
+            if new_det > volume_tolerance
+                push!(valid_elements, tet_copy)
+                fixed_elements += 1
+                continue
+            end
+
+            # Strategy 3: Swap vertices 2 and 3
+            tet_copy = copy(tet)
+            tet_copy[2], tet_copy[3] = tet_copy[3], tet_copy[2]
+
+            new_vertices = SVector{4,SVector{3,Float64}}(
+                mesh.X[tet_copy[1]],
+                mesh.X[tet_copy[2]],
+                mesh.X[tet_copy[3]],
+                mesh.X[tet_copy[4]],
+            )
+            new_a = new_vertices[2] - new_vertices[1]
+            new_b = new_vertices[3] - new_vertices[1]
+            new_c = new_vertices[4] - new_vertices[1]
+            new_det = dot(new_a, cross(new_b, new_c))
+
+            if new_det > volume_tolerance
+                push!(valid_elements, tet_copy)
+                fixed_elements += 1
+                continue
+            end
+
+            # All fix attempts failed
+            failed_fixes += 1
+        else
+            # Element already has positive determinant
+            push!(valid_elements, tet)
         end
     end
 
-    if degenerate_count > 0
-        @warn "Found $degenerate_count elements with duplicate nodes"
-    end
+    # Update connectivity
+    mesh.IEN = valid_elements
+    create_INE!(mesh)                  # Creates inverse connectivity (mesh.INE)
 
-    if failed_count > 0
-        @warn "Failed to fix orientation of $failed_count elements"
+    # Report statistics before connectivity update
+    println("  Fixed orientation of $fixed_elements inverted elements")
+    if failed_fixes != 0
+        println(
+            "  Failed to fix orientation of $(RED)$(BOLD)$(failed_fixes)$(RESET) elements",
+        )
     end
+    println("  Removing $zero_volume_elements elements with near-zero volume")
 
-    @info "Fixed orientation of $fixed_count tetrahedra"
-    return fixed_count
+    return mesh
 end
