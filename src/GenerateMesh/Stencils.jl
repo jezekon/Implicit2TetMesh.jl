@@ -1,6 +1,73 @@
 # Functions for tetrahedral mesh slicing along an isosurface
 # Implements the "trim spikes" algorithm for accurate surface representation
 
+# ----------------------------
+# Warping safety parameters
+# ----------------------------
+
+"""
+    CaseParams
+
+Safety parameters for a specific warping case (NNZZ or NZZZ).
+
+# Fields
+- `threshold_distance::Float64`: Maximum distance of centroid from isosurface for warping
+- `max_node_displacement::Float64`: Maximum allowed node displacement during warping
+- `min_volume_ratio::Float64`: Minimum volume ratio relative to original element
+"""
+struct CaseParams
+    threshold_distance::Float64
+    max_node_displacement::Float64
+    min_volume_ratio::Float64
+end
+
+"""
+    WarpingSafetyParams
+
+Container for safety parameters for different warping cases.
+
+# Fields
+- `nnzz::CaseParams`: Parameters for NNZZ case (two nodes outside, two on surface)
+- `nzzz::CaseParams`: Parameters for NZZZ case (one node outside, three on surface)
+"""
+struct WarpingSafetyParams
+    nnzz::CaseParams
+    nzzz::CaseParams
+end
+
+"""
+    create_warping_params(scheme::String, grid_step::Float64) -> WarpingSafetyParams
+
+Create scheme-specific safety parameters for warping operations.
+
+NNZZ case (2 nodes warped) uses stricter parameters.
+NZZZ case (1 node warped) uses relaxed parameters.
+
+# Arguments
+- `scheme::String`: Discretization scheme ("A15" or "Schlafli")
+- `grid_step::Float64`: Mesh grid step size
+
+# Returns
+- `WarpingSafetyParams`: Safety parameters for warping operations
+"""
+function create_warping_params(scheme::String, grid_step::Float64)
+    if scheme == "A15"
+        base_threshold = 0.15 * grid_step
+        # NNZZ: Strict parameters (warping 2 nodes simultaneously)
+        nnzz = CaseParams(base_threshold, 0.2 * grid_step, 0.05)
+        # NZZZ: Relaxed parameters (warping only 1 node)
+        nzzz = CaseParams(2.0 * base_threshold, 0.4 * grid_step, 0.025)
+    elseif scheme == "Schlafli"
+        base_threshold = 0.3 * grid_step
+        nnzz = CaseParams(base_threshold, 0.4 * grid_step, 0.05)
+        nzzz = CaseParams(2.0 * base_threshold, 0.8 * grid_step, 0.025)
+    else
+        error("Unknown scheme: $scheme")
+    end
+
+    return WarpingSafetyParams(nnzz, nzzz)
+end
+
 """
     slice_ambiguous_tetrahedra!(mesh::BlockMesh)
 
@@ -8,37 +75,26 @@ Slice tetrahedra crossing the isosurface (SDF zero level set).
 Identifies elements crossing the boundary and replaces them with smaller
 tetrahedra that accurately represent the surface.
 """
-function slice_ambiguous_tetrahedra!(mesh::BlockMesh)
-    @info "Slicing tetrahedra using trim_spikes logic (with element splitting)..."
-    new_IEN = Vector{Vector{Int64}}()
-    sizehint!(new_IEN, length(mesh.IEN)) # Pre-allocate for performance
+function slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String)
+    @info "Slicing tetrahedra using trim_spikes logic..."
 
-    # Cache for storing cut edge results to avoid duplicate cutting
+    warp_params = create_warping_params(scheme, mesh.grid_step)
     cut_map = Dict{Tuple{Int,Int},Int}()
+    new_IEN = Vector{Vector{Int64}}()
+    sizehint!(new_IEN, length(mesh.IEN))
 
-    original_node_count = length(mesh.X)
-    original_tet_count = length(mesh.IEN)
-
-    # Process original connectivity while building new connectivity
     current_IEN = mesh.IEN
-    mesh.IEN = Vector{Vector{Int64}}() # Clear current IEN temporarily
+    mesh.IEN = Vector{Vector{Int64}}()
 
     for tet in current_IEN
-        # Apply the trim_spikes stencil to each tetrahedron
-        resulting_tets = apply_stencil_trim_spikes!(mesh, tet, cut_map)
-
-        # Add valid resulting tetrahedra to the new connectivity list
+        resulting_tets = apply_stencil_trim_spikes!(mesh, tet, cut_map, warp_params)
         for nt in resulting_tets
             push!(new_IEN, nt)
         end
     end
 
-    mesh.IEN = new_IEN # Update mesh connectivity
-    new_tet_count = length(mesh.IEN)
-
-    println(
-        "  After trim_spikes slicing: $(new_tet_count) tetrahedra (removed $(original_tet_count - new_tet_count))",
-    )
+    mesh.IEN = new_IEN
+    println("  After slicing: $(length(mesh.IEN)) tetrahedra")
 end
 
 # ----------------------------
@@ -283,6 +339,173 @@ function add_warped_node!(
     return new_index
 end
 
+# ----------------------------
+# Case-specific warping handlers
+# ----------------------------
+
+"""
+    process_nnzz_case!(mesh, s_idx, r_idx, q_idx, p_idx, sdf_s, sdf_r, cut_map, params, tol)
+
+Process NNZZ case: two nodes outside (negative SDF), two on surface (zero SDF).
+
+Warps both negative nodes to the surface with strict safety checks:
+1. Original centroid must be near surface (threshold_distance)
+2. Node displacements must be limited (max_node_displacement)
+3. New volume must be reasonable (min_volume_ratio)
+4. New centroid must be inside geometry (positive SDF)
+5. Element must have correct orientation (positive Jacobian)
+
+# Arguments
+- `mesh::BlockMesh`: The tetrahedral mesh
+- `s_idx, r_idx, q_idx, p_idx::Int`: Node indices (sorted by SDF: s ≤ r ≤ q ≤ p)
+- `sdf_s, sdf_r::Float64`: SDF values at nodes s and r (negative)
+- `cut_map::Dict`: Cache for avoiding duplicate node creation
+- `params::CaseParams`: Safety parameters for this case
+- `tol::Float64`: Tolerance for surface detection
+
+# Returns
+- `Vector{Vector{Int64}}`: New tetrahedron if all checks pass, empty vector otherwise
+"""
+function process_nnzz_case!(
+    mesh::BlockMesh,
+    s_idx::Int,
+    r_idx::Int,
+    q_idx::Int,
+    p_idx::Int,
+    sdf_s::Float64,
+    sdf_r::Float64,
+    cut_map::Dict{Tuple{Int,Int},Int},
+    params::CaseParams,
+    tol::Float64,
+)::Vector{Vector{Int64}}
+
+    # Safety check 1: Original centroid distance from surface
+    original_centroid =
+        (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
+    if abs(eval_sdf(mesh, original_centroid)) > params.threshold_distance
+        return Vector{Vector{Int64}}()
+    end
+
+    # Calculate original element volume for comparison
+    v_orig = [mesh.X[s_idx], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
+    vol_orig =
+        abs(
+            dot(cross(v_orig[2] - v_orig[1], v_orig[3] - v_orig[1]), v_orig[4] - v_orig[1]),
+        ) / 6.0
+
+    # Warp both negative nodes to the isosurface
+    s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
+    r_warped = warp_node_to_surface(mesh, mesh.X[r_idx], sdf_r)
+
+    # Safety check 2: Node displacement limits
+    if norm(s_warped - mesh.X[s_idx]) > params.max_node_displacement ||
+       norm(r_warped - mesh.X[r_idx]) > params.max_node_displacement
+        return Vector{Vector{Int64}}()
+    end
+
+    # Add warped nodes to mesh (uses cache to avoid duplicates)
+    s_new = add_warped_node!(mesh, s_warped, cut_map)
+    r_new = add_warped_node!(mesh, r_warped, cut_map)
+    new_tet = [s_new, r_new, q_idx, p_idx]
+
+    # Safety check 3: Volume ratio must be reasonable
+    v_new = [mesh.X[s_new], mesh.X[r_new], mesh.X[q_idx], mesh.X[p_idx]]
+    vol_new =
+        abs(dot(cross(v_new[2] - v_new[1], v_new[3] - v_new[1]), v_new[4] - v_new[1])) / 6.0
+
+    if vol_new < params.min_volume_ratio * vol_orig
+        return Vector{Vector{Int64}}()
+    end
+
+    # Safety check 4: New centroid must be inside geometry
+    centroid = (mesh.X[s_new] + mesh.X[r_new] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
+    if eval_sdf(mesh, centroid) <= tol
+        return Vector{Vector{Int64}}()
+    end
+
+    # Safety check 5: Correct element orientation
+    fix_tetrahedron_orientation!(mesh, new_tet)
+    return check_tetrahedron_orientation(mesh, new_tet) ? [new_tet] :
+           Vector{Vector{Int64}}()
+end
+
+"""
+    process_nzzz_case!(mesh, s_idx, r_idx, q_idx, p_idx, sdf_s, cut_map, params, tol)
+
+Process NZZZ case: one node outside (negative SDF), three on surface (zero SDF).
+
+Warps single negative node to surface with relaxed safety checks (safer case).
+
+# Arguments
+- `mesh::BlockMesh`: The tetrahedral mesh
+- `s_idx, r_idx, q_idx, p_idx::Int`: Node indices (sorted by SDF)
+- `sdf_s::Float64`: SDF value at node s (negative)
+- `cut_map::Dict`: Cache for avoiding duplicate node creation
+- `params::CaseParams`: Safety parameters (relaxed for this case)
+- `tol::Float64`: Tolerance for surface detection
+
+# Returns
+- `Vector{Vector{Int64}}`: New tetrahedron if all checks pass, empty vector otherwise
+"""
+function process_nzzz_case!(
+    mesh::BlockMesh,
+    s_idx::Int,
+    r_idx::Int,
+    q_idx::Int,
+    p_idx::Int,
+    sdf_s::Float64,
+    cut_map::Dict{Tuple{Int,Int},Int},
+    params::CaseParams,
+    tol::Float64,
+)::Vector{Vector{Int64}}
+
+    # Safety check 1: Original centroid distance from surface (relaxed threshold)
+    original_centroid =
+        (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
+    if abs(eval_sdf(mesh, original_centroid)) > params.threshold_distance
+        return Vector{Vector{Int64}}()
+    end
+
+    # Calculate original element volume for comparison
+    v_orig = [mesh.X[s_idx], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
+    vol_orig =
+        abs(
+            dot(cross(v_orig[2] - v_orig[1], v_orig[3] - v_orig[1]), v_orig[4] - v_orig[1]),
+        ) / 6.0
+
+    # Warp single negative node to the isosurface
+    s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
+
+    # Safety check 2: Node displacement limit (relaxed for single node)
+    if norm(s_warped - mesh.X[s_idx]) > params.max_node_displacement
+        return Vector{Vector{Int64}}()
+    end
+
+    # Add warped node to mesh
+    s_new = add_warped_node!(mesh, s_warped, cut_map)
+    new_tet = [s_new, r_idx, q_idx, p_idx]
+
+    # Safety check 3: Volume ratio (relaxed minimum)
+    v_new = [mesh.X[s_new], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
+    vol_new =
+        abs(dot(cross(v_new[2] - v_new[1], v_new[3] - v_new[1]), v_new[4] - v_new[1])) / 6.0
+
+    if vol_new < params.min_volume_ratio * vol_orig
+        return Vector{Vector{Int64}}()
+    end
+
+    # Safety check 4: New centroid must be inside geometry
+    centroid = (mesh.X[s_new] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
+    if eval_sdf(mesh, centroid) <= tol
+        return Vector{Vector{Int64}}()
+    end
+
+    # Safety check 5: Correct element orientation
+    fix_tetrahedron_orientation!(mesh, new_tet)
+    return check_tetrahedron_orientation(mesh, new_tet) ? [new_tet] :
+           Vector{Vector{Int64}}()
+end
+
 """
     apply_stencil_trim_spikes!(mesh::BlockMesh, tet::Vector{Int64}, cut_map::Dict{Tuple{Int, Int}, Int})
 
@@ -294,6 +517,7 @@ function apply_stencil_trim_spikes!(
     mesh::BlockMesh,
     tet::Vector{Int64},
     cut_map::Dict{Tuple{Int,Int},Int},
+    warp_params::WarpingSafetyParams,
 )::Vector{Vector{Int64}}
 
     # Get SDF values for tetrahedron nodes
@@ -404,165 +628,43 @@ function apply_stencil_trim_spikes!(
         push!(new_tets, t)
     end
 
-    # --- Case analysis based on SDF sign patterns --- (S=<R=<Q=<P)
-    if is_s_neg && is_p_zero # NNNZ, NNZZ, NZZZ
-        # Define safety thresholds based on grid step
-        threshold_distance = 0.15 * mesh.grid_step  # Max distance for warping consideration
-        max_node_displacement = 0.2 * mesh.grid_step  # Max allowed displacement per node
-        min_volume_ratio = 0.05  # Minimum volume relative to original
-
-        # FIRST: Check if ORIGINAL centroid is close enough to surface
-        # Only consider warping if element is near the boundary
-        original_centroid =
-            (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-        centroid_distance_to_surface = abs(eval_sdf(mesh, original_centroid))
-
-        if centroid_distance_to_surface > threshold_distance
-            # Element too far from surface - too risky to warp, discard
-            println(
-                "  -> Centroid too far from surface ($centroid_distance_to_surface > $threshold_distance), discarding",
-            )
-            return Vector{Vector{Int64}}()
-        end
-
-        # Calculate original element volume for comparison
-        v_orig = [mesh.X[s_idx], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
-        vol_orig =
-            abs(
-                dot(
-                    cross(v_orig[2] - v_orig[1], v_orig[3] - v_orig[1]),
-                    v_orig[4] - v_orig[1],
-                ),
-            ) / 6.0
-
-        # Now process specific cases with safety checks
+    # --- Case analysis based on SDF sign patterns --- (S ≤ R ≤ Q ≤ P)
+    if is_s_neg && is_p_zero # Cases: NNNZ, NNZZ, NZZZ
         if is_s_neg && is_r_neg && is_q_neg && is_p_zero
-            # This is VERY RISKY - warping 3 nodes simultaneously
-            # Conservative approach: discard these thin elements
+            # NNNZ: Three nodes outside, one on surface
+            # Too risky - warping 3 nodes simultaneously could cause mesh intersections
             return Vector{Vector{Int64}}()
 
         elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero
-            # NNZZ - two nodes outside, two on surface
-
-            # Warp negative nodes to surface
-            s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
-            r_warped = warp_node_to_surface(mesh, mesh.X[r_idx], sdf_r)
-
-            # SAFETY CHECK 1: Check displacement distances
-            s_displacement = norm(s_warped - mesh.X[s_idx])
-            r_displacement = norm(r_warped - mesh.X[r_idx])
-
-            if s_displacement > max_node_displacement ||
-               r_displacement > max_node_displacement
-                println(
-                    "     -> Node displacement too large (s=$s_displacement, r=$r_displacement), discarding",
-                )
-                return Vector{Vector{Int64}}()
-            end
-
-            # Add warped nodes to mesh
-            s_new = add_warped_node!(mesh, s_warped, cut_map)
-            r_new = add_warped_node!(mesh, r_warped, cut_map)
-
-            # Create new tetrahedron
-            new_tet = [s_new, r_new, q_idx, p_idx]
-
-            # SAFETY CHECK 2: Calculate new volume
-            v_new = [mesh.X[s_new], mesh.X[r_new], mesh.X[q_idx], mesh.X[p_idx]]
-            vol_new =
-                abs(
-                    dot(
-                        cross(v_new[2] - v_new[1], v_new[3] - v_new[1]),
-                        v_new[4] - v_new[1],
-                    ),
-                ) / 6.0
-
-            if vol_new < min_volume_ratio * vol_orig
-                println(
-                    "     -> Volume too small after warping ($(vol_new) < $(min_volume_ratio * vol_orig)), discarding",
-                )
-                return Vector{Vector{Int64}}()
-            end
-
-            # SAFETY CHECK 3: Check new centroid is inside
-            centroid = (mesh.X[s_new] + mesh.X[r_new] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-            centroid_sdf = eval_sdf(mesh, centroid)
-
-            if centroid_sdf <= tol
-                println(
-                    "     -> Centroid outside after warping (sdf=$centroid_sdf), discarding",
-                )
-                return Vector{Vector{Int64}}()
-            end
-
-            # SAFETY CHECK 4: Verify orientation
-            fix_tetrahedron_orientation!(mesh, new_tet)
-            if !check_tetrahedron_orientation(mesh, new_tet)
-                @warn "NNZZ warped tetrahedron has bad orientation, discarding"
-                return Vector{Vector{Int64}}()
-            end
-
-            # All checks passed - keep element
-            return [new_tet]
+            # NNZZ: Two nodes outside, two on surface - use strict parameters
+            return process_nnzz_case!(
+                mesh,
+                s_idx,
+                r_idx,
+                q_idx,
+                p_idx,
+                sdf_s,
+                sdf_r,
+                cut_map,
+                warp_params.nnzz,
+                tol,
+            )
 
         elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
-            # NZZZ - one node outside, three on surface
-            # This is relatively safe - only one node to warp
-
-            # Warp the negative node to surface
-            s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
-
-            # SAFETY CHECK 1: Check displacement distance
-            s_displacement = norm(s_warped - mesh.X[s_idx])
-
-            if s_displacement > max_node_displacement
-                println("     -> Node displacement too large ($s_displacement), discarding")
-                return Vector{Vector{Int64}}()
-            end
-
-            # Add warped node to mesh
-            s_new = add_warped_node!(mesh, s_warped, cut_map)
-
-            # Create new tetrahedron
-            new_tet = [s_new, r_idx, q_idx, p_idx]
-
-            # SAFETY CHECK 2: Calculate new volume
-            v_new = [mesh.X[s_new], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
-            vol_new =
-                abs(
-                    dot(
-                        cross(v_new[2] - v_new[1], v_new[3] - v_new[1]),
-                        v_new[4] - v_new[1],
-                    ),
-                ) / 6.0
-
-            if vol_new < min_volume_ratio * vol_orig
-                println("     -> Volume too small after warping ($vol_new), discarding")
-                return Vector{Vector{Int64}}()
-            end
-
-            # SAFETY CHECK 3: Check new centroid is inside
-            centroid = (mesh.X[s_new] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-            centroid_sdf = eval_sdf(mesh, centroid)
-
-            if centroid_sdf <= tol
-                println(
-                    "     -> Centroid outside after warping (sdf=$centroid_sdf), discarding",
-                )
-                return Vector{Vector{Int64}}()
-            end
-
-            # SAFETY CHECK 4: Verify orientation
-            fix_tetrahedron_orientation!(mesh, new_tet)
-            if !check_tetrahedron_orientation(mesh, new_tet)
-                @warn "NZZZ warped tetrahedron has bad orientation, discarding"
-                return Vector{Vector{Int64}}()
-            end
-
-            # All checks passed - keep element
-            return [new_tet]
+            # NZZZ: One node outside, three on surface - use relaxed parameters
+            return process_nzzz_case!(
+                mesh,
+                s_idx,
+                r_idx,
+                q_idx,
+                p_idx,
+                sdf_s,
+                cut_map,
+                warp_params.nzzz,
+                tol,
+            )
         else
-            println("  -> NO MATCH! This is the problem!")
+            println("  -> NO MATCH!")
             return Vector{Vector{Int64}}()
         end
 

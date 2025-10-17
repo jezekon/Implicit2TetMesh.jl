@@ -45,7 +45,7 @@ include("GenerateMeshTests/validate_sdf_values.jl")
         # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-step_warp$(scheme).vtu")
         stats = validate_node_sdf_values(mesh, 0.005)
 
-        slice_ambiguous_tetrahedra!(mesh) # Remove elements outside the body
+        slice_ambiguous_tetrahedra!(mesh, scheme) # Remove elements outside the body
         export_mesh_vtu(mesh, "$(taskName)_3-Sliced-$(scheme).vtu")
 
         stats = validate_node_sdf_values(mesh, 0.005)

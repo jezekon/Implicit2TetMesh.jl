@@ -122,7 +122,7 @@ function generate_tetrahedral_mesh(
     update_connectivity!(mesh)
 
     # Step 6: Process the isosurface boundary using the selected method
-    slice_ambiguous_tetrahedra!(mesh)
+    slice_ambiguous_tetrahedra!(mesh, options.scheme)
 
     # Step 7: Update mesh connectivity again after isosurface processing
     update_connectivity!(mesh)
