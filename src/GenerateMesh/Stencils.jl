@@ -301,22 +301,9 @@ function apply_stencil_trim_spikes!(
     node_sdf = [mesh.node_sdf[idx] for idx in node_indices]
     tol = mesh.grid_tol
 
-    # DIAGNOSTIC: Check if this is problematic BEFORE any processing
-    centroid_check = sum(mesh.X[idx] for idx in node_indices) / 4.0
-    centroid_sdf_check = eval_sdf(mesh, centroid_check)
-    is_problematic = centroid_sdf_check > tol && any(s -> s < -tol, node_sdf)
-
-    if is_problematic
-        println("\n=== PROBLEMATIC ELEMENT ENTERING ===")
-        println("Node indices: $node_indices")
-        println("Node SDFs (unsorted): $node_sdf")
-        println("Centroid SDF: $centroid_sdf_check")
-    end
-
     # --- Special cases handling ---
     # Case 1: All nodes outside (SDF < -tol) - discard tetrahedron (NNNN case)
     if all(s -> s < -tol, node_sdf)
-        is_problematic && println("case NNNN")
         return Vector{Vector{Int64}}()
     end
 
@@ -398,17 +385,6 @@ function apply_stencil_trim_spikes!(
     is_q_zero = abs(sdf_q) <= tol
     is_p_zero = abs(sdf_p) <= tol
 
-    if is_problematic
-        println("After sorting: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p")
-        println(
-            "Classifications: s_neg=$is_s_neg, r_neg=$is_r_neg, q_neg=$is_q_neg, p_neg=$is_p_neg",
-        )
-        println(
-            "                 s_zero=$is_s_zero, r_zero=$is_r_zero, q_zero=$is_q_zero, p_zero=$is_p_zero",
-        )
-        println("                 r_pos=$is_r_pos, q_pos=$is_q_pos, p_pos=$is_p_pos")
-    end
-
     new_tets = Vector{Vector{Int64}}()
 
     # Helper function to add tetrahedron with orientation check
@@ -433,7 +409,7 @@ function apply_stencil_trim_spikes!(
         # Define safety thresholds based on grid step
         threshold_distance = 0.15 * mesh.grid_step  # Max distance for warping consideration
         max_node_displacement = 0.2 * mesh.grid_step  # Max allowed displacement per node
-        min_volume_ratio = 0.01  # Minimum volume relative to original
+        min_volume_ratio = 0.05  # Minimum volume relative to original
 
         # FIRST: Check if ORIGINAL centroid is close enough to surface
         # Only consider warping if element is near the boundary
@@ -443,7 +419,7 @@ function apply_stencil_trim_spikes!(
 
         if centroid_distance_to_surface > threshold_distance
             # Element too far from surface - too risky to warp, discard
-            is_problematic && println(
+            println(
                 "  -> Centroid too far from surface ($centroid_distance_to_surface > $threshold_distance), discarding",
             )
             return Vector{Vector{Int64}}()
@@ -461,15 +437,11 @@ function apply_stencil_trim_spikes!(
 
         # Now process specific cases with safety checks
         if is_s_neg && is_r_neg && is_q_neg && is_p_zero
-            is_problematic && println("  -> NNNZ case")
-            # NNNZ - three nodes outside, one on surface
             # This is VERY RISKY - warping 3 nodes simultaneously
             # Conservative approach: discard these thin elements
-            is_problematic && println("     -> Too risky (3 nodes to warp), discarding")
             return Vector{Vector{Int64}}()
 
         elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero
-            is_problematic && println("  -> NNZZ case")
             # NNZZ - two nodes outside, two on surface
 
             # Warp negative nodes to surface
@@ -482,7 +454,7 @@ function apply_stencil_trim_spikes!(
 
             if s_displacement > max_node_displacement ||
                r_displacement > max_node_displacement
-                is_problematic && println(
+                println(
                     "     -> Node displacement too large (s=$s_displacement, r=$r_displacement), discarding",
                 )
                 return Vector{Vector{Int64}}()
@@ -506,7 +478,7 @@ function apply_stencil_trim_spikes!(
                 ) / 6.0
 
             if vol_new < min_volume_ratio * vol_orig
-                is_problematic && println(
+                println(
                     "     -> Volume too small after warping ($(vol_new) < $(min_volume_ratio * vol_orig)), discarding",
                 )
                 return Vector{Vector{Int64}}()
@@ -517,7 +489,7 @@ function apply_stencil_trim_spikes!(
             centroid_sdf = eval_sdf(mesh, centroid)
 
             if centroid_sdf <= tol
-                is_problematic && println(
+                println(
                     "     -> Centroid outside after warping (sdf=$centroid_sdf), discarding",
                 )
                 return Vector{Vector{Int64}}()
@@ -534,7 +506,6 @@ function apply_stencil_trim_spikes!(
             return [new_tet]
 
         elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
-            is_problematic && println("  -> NZZZ case")
             # NZZZ - one node outside, three on surface
             # This is relatively safe - only one node to warp
 
@@ -545,9 +516,7 @@ function apply_stencil_trim_spikes!(
             s_displacement = norm(s_warped - mesh.X[s_idx])
 
             if s_displacement > max_node_displacement
-                is_problematic && println(
-                    "     -> Node displacement too large ($s_displacement), discarding",
-                )
+                println("     -> Node displacement too large ($s_displacement), discarding")
                 return Vector{Vector{Int64}}()
             end
 
@@ -568,8 +537,7 @@ function apply_stencil_trim_spikes!(
                 ) / 6.0
 
             if vol_new < min_volume_ratio * vol_orig
-                is_problematic &&
-                    println("     -> Volume too small after warping ($vol_new), discarding")
+                println("     -> Volume too small after warping ($vol_new), discarding")
                 return Vector{Vector{Int64}}()
             end
 
@@ -578,7 +546,7 @@ function apply_stencil_trim_spikes!(
             centroid_sdf = eval_sdf(mesh, centroid)
 
             if centroid_sdf <= tol
-                is_problematic && println(
+                println(
                     "     -> Centroid outside after warping (sdf=$centroid_sdf), discarding",
                 )
                 return Vector{Vector{Int64}}()
@@ -605,7 +573,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NNNP: Three nodes outside, one inside
     elseif is_s_neg && is_r_neg && is_q_neg && is_p_pos
-        is_problematic && println("NNNP")
         # Cut three edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -620,7 +587,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NPPP: One node outside, three inside
     elseif is_s_neg && is_r_pos
-        is_problematic && println("NPPP")
         if !is_r_neg && !is_q_neg # Confirm r, q, p are interior nodes
             # Cut edges from outside node to each interior node
             sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map)
@@ -644,7 +610,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NNPP: Two nodes outside, two inside
     elseif is_r_neg && is_q_pos
-        is_problematic && println("NNPP")
         # Cut all four edges crossing the isosurface
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -664,7 +629,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NZPP: One outside, one on surface, two inside
     elseif is_s_neg && is_r_zero && is_q_pos
-        is_problematic && println("NZPP")
         # Cut edges from outside node to interior nodes
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
@@ -680,7 +644,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NNZP: Two outside, one on surface, one inside
     elseif is_r_neg && is_q_zero && is_p_pos
-        is_problematic && println("NNZP")
         # Cut edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -694,7 +657,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NZZP: One outside, two on surface, one inside
     elseif is_s_neg && is_r_zero && is_q_zero && is_p_pos
-        is_problematic && println("NZZP")
         # Cut edge from outside node to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
 
