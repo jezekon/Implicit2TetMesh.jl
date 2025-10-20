@@ -342,93 +342,6 @@ end
 # ----------------------------
 # Case-specific warping handlers
 # ----------------------------
-
-"""
-    process_nnzz_case!(mesh, s_idx, r_idx, q_idx, p_idx, sdf_s, sdf_r, cut_map, params, tol)
-
-Process NNZZ case: two nodes outside (negative SDF), two on surface (zero SDF).
-
-Warps both negative nodes to the surface with strict safety checks:
-1. Original centroid must be near surface (threshold_distance)
-2. Node displacements must be limited (max_node_displacement)
-3. New volume must be reasonable (min_volume_ratio)
-4. New centroid must be inside geometry (positive SDF)
-5. Element must have correct orientation (positive Jacobian)
-
-# Arguments
-- `mesh::BlockMesh`: The tetrahedral mesh
-- `s_idx, r_idx, q_idx, p_idx::Int`: Node indices (sorted by SDF: s ≤ r ≤ q ≤ p)
-- `sdf_s, sdf_r::Float64`: SDF values at nodes s and r (negative)
-- `cut_map::Dict`: Cache for avoiding duplicate node creation
-- `params::CaseParams`: Safety parameters for this case
-- `tol::Float64`: Tolerance for surface detection
-
-# Returns
-- `Vector{Vector{Int64}}`: New tetrahedron if all checks pass, empty vector otherwise
-"""
-function process_nnzz_case!(
-    mesh::BlockMesh,
-    s_idx::Int,
-    r_idx::Int,
-    q_idx::Int,
-    p_idx::Int,
-    sdf_s::Float64,
-    sdf_r::Float64,
-    cut_map::Dict{Tuple{Int,Int},Int},
-    params::CaseParams,
-    tol::Float64,
-)::Vector{Vector{Int64}}
-
-    # Safety check 1: Original centroid distance from surface
-    original_centroid =
-        (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-    if abs(eval_sdf(mesh, original_centroid)) > params.threshold_distance
-        return Vector{Vector{Int64}}()
-    end
-
-    # Calculate original element volume for comparison
-    v_orig = [mesh.X[s_idx], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
-    vol_orig =
-        abs(
-            dot(cross(v_orig[2] - v_orig[1], v_orig[3] - v_orig[1]), v_orig[4] - v_orig[1]),
-        ) / 6.0
-
-    # Warp both negative nodes to the isosurface
-    s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
-    r_warped = warp_node_to_surface(mesh, mesh.X[r_idx], sdf_r)
-
-    # Safety check 2: Node displacement limits
-    if norm(s_warped - mesh.X[s_idx]) > params.max_node_displacement ||
-       norm(r_warped - mesh.X[r_idx]) > params.max_node_displacement
-        return Vector{Vector{Int64}}()
-    end
-
-    # Add warped nodes to mesh (uses cache to avoid duplicates)
-    s_new = add_warped_node!(mesh, s_warped, cut_map)
-    r_new = add_warped_node!(mesh, r_warped, cut_map)
-    new_tet = [s_new, r_new, q_idx, p_idx]
-
-    # Safety check 3: Volume ratio must be reasonable
-    v_new = [mesh.X[s_new], mesh.X[r_new], mesh.X[q_idx], mesh.X[p_idx]]
-    vol_new =
-        abs(dot(cross(v_new[2] - v_new[1], v_new[3] - v_new[1]), v_new[4] - v_new[1])) / 6.0
-
-    if vol_new < params.min_volume_ratio * vol_orig
-        return Vector{Vector{Int64}}()
-    end
-
-    # Safety check 4: New centroid must be inside geometry
-    centroid = (mesh.X[s_new] + mesh.X[r_new] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-    if eval_sdf(mesh, centroid) <= tol
-        return Vector{Vector{Int64}}()
-    end
-
-    # Safety check 5: Correct element orientation
-    fix_tetrahedron_orientation!(mesh, new_tet)
-    return check_tetrahedron_orientation(mesh, new_tet) ? [new_tet] :
-           Vector{Vector{Int64}}()
-end
-
 """
     process_nzzz_case!(mesh, s_idx, r_idx, q_idx, p_idx, sdf_s, cut_map, params, tol)
 
@@ -637,18 +550,7 @@ function apply_stencil_trim_spikes!(
 
         elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero
             # NNZZ: Two nodes outside, two on surface - use strict parameters
-            return process_nnzz_case!(
-                mesh,
-                s_idx,
-                r_idx,
-                q_idx,
-                p_idx,
-                sdf_s,
-                sdf_r,
-                cut_map,
-                warp_params.nnzz,
-                tol,
-            )
+            return Vector{Vector{Int64}}()
 
         elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
             # NZZZ: One node outside, three on surface - use relaxed parameters
