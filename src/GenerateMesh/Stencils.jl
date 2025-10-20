@@ -378,28 +378,9 @@ end
 # Case-specific warping handlers
 # ----------------------------
 """
-    process_nnzz_case!(mesh, s_idx, r_idx, q_idx, p_idx, sdf_s, sdf_r, cut_map, params, tol, flipped)
+    process_nnzz_case!(mesh, s_idx, r_idx, q_idx, p_idx, sdf_s, sdf_r, cut_map, params, tol)
 
-Process NNZZ case: two nodes outside (negative SDF), two on surface (zero SDF).
-
-Warps both negative nodes to the surface with strict safety checks:
-1. Original centroid must be near surface (threshold_distance)
-2. Node displacements must be limited (max_node_displacement)
-3. New volume must be reasonable (min_volume_ratio)
-4. New centroid must be inside geometry (positive SDF)
-5. Element must have correct orientation (positive Jacobian)
-
-# Arguments
-- `mesh::BlockMesh`: The tetrahedral mesh
-- `s_idx, r_idx, q_idx, p_idx::Int`: Node indices (sorted by SDF: s ≤ r ≤ q ≤ p)
-- `sdf_s, sdf_r::Float64`: SDF values at nodes s and r (negative)
-- `cut_map::Dict`: Cache for avoiding duplicate node creation
-- `params::CaseParams`: Safety parameters for this case
-- `tol::Float64`: Tolerance for surface detection
-- `flipped::Bool`: Indicates if element orientation was flipped during sorting
-
-# Returns
-- `Vector{Vector{Int64}}`: New tetrahedron if all checks pass, empty vector otherwise
+Returns `true` if warping succeeded and new element is valid, `false` otherwise.
 """
 function process_nnzz_case!(
     mesh::BlockMesh,
@@ -412,19 +393,15 @@ function process_nnzz_case!(
     cut_map::Dict{Tuple{Int,Int},Int},
     params::CaseParams,
     tol::Float64,
-    flipped::Bool,
-)::Vector{Vector{Int64}}
-
+)::Bool
     # Safety check 1: Original centroid distance from surface
-    # Centrum původního elementu musí být blízko isosurface pro bezpečný warping
     original_centroid =
         (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
     if abs(eval_sdf(mesh, original_centroid)) > params.threshold_distance
-        return Vector{Vector{Int64}}()
+        return false
     end
 
     # Calculate original element volume for comparison
-    # Potřebujeme pro kontrolu, že nový element nebude příliš malý
     v_orig = [mesh.X[s_idx], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
     vol_orig =
         abs(
@@ -432,84 +409,53 @@ function process_nnzz_case!(
         ) / 6.0
 
     # Warp both negative nodes to the isosurface
-    # Oba uzly s negativním SDF se přesunou na isosurface
     s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
     r_warped = warp_node_to_surface(mesh, mesh.X[r_idx], sdf_r)
 
     # Safety check 2: Node displacement limits
-    # Uzly se nesmí posunout příliš daleko (risk of mesh tangling)
     if norm(s_warped - mesh.X[s_idx]) > params.max_node_displacement ||
        norm(r_warped - mesh.X[r_idx]) > params.max_node_displacement
-        return Vector{Vector{Int64}}()
+        return false
     end
 
     # Add warped nodes to mesh (uses cache to avoid duplicates)
-    # Přidá nové uzly do meshe, využívá hash pro eliminaci duplikátů
     s_new = add_warped_node!(mesh, s_warped, cut_map)
     r_new = add_warped_node!(mesh, r_warped, cut_map)
-
-    # Create tetrahedron with correct orientation based on flipped flag
-    # Respektuje původní orientaci elementu při vytváření nového tetraherdonu
-    new_tet = if flipped
-        [r_new, s_new, q_idx, p_idx]  # Flipped order - swap first two nodes
-    else
-        [s_new, r_new, q_idx, p_idx]  # Normal order
-    end
+    new_tet = [s_new, r_new, q_idx, p_idx]
 
     # Safety check 3: Volume ratio must be reasonable
-    # Nový element nesmí být degenerovaný (příliš malý objem)
-    v_new = [mesh.X[new_tet[1]], mesh.X[new_tet[2]], mesh.X[new_tet[3]], mesh.X[new_tet[4]]]
+    v_new = [mesh.X[s_new], mesh.X[r_new], mesh.X[q_idx], mesh.X[p_idx]]
     vol_new =
         abs(dot(cross(v_new[2] - v_new[1], v_new[3] - v_new[1]), v_new[4] - v_new[1])) / 6.0
 
     if vol_new < params.min_volume_ratio * vol_orig
-        return Vector{Vector{Int64}}()
+        return false
     end
 
     # Safety check 4: New centroid must be inside geometry
-    # Centrum nového elementu musí být uvnitř geometrie (pozitivní SDF)
-    centroid =
-        (
-            mesh.X[new_tet[1]] +
-            mesh.X[new_tet[2]] +
-            mesh.X[new_tet[3]] +
-            mesh.X[new_tet[4]]
-        ) / 4.0
+    centroid = (mesh.X[s_new] + mesh.X[r_new] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
     if eval_sdf(mesh, centroid) <= tol
-        return Vector{Vector{Int64}}()
+        return false
     end
 
     # Safety check 5: Correct element orientation
-    # Finální kontrola a případná oprava orientace (pozitivní Jacobián)
     fix_tetrahedron_orientation!(mesh, new_tet)
-
-    # Verify orientation is correct after fix attempt
     if !check_tetrahedron_orientation(mesh, new_tet)
-        @warn "NNZZ case: Failed to achieve positive orientation for tet $new_tet"
-        return Vector{Vector{Int64}}()
+        return false
     end
 
-    return [new_tet]
+    # Store the new tetrahedron in cut_map for retrieval
+    # Using special key to store the result
+    cut_map[(s_idx, r_idx)] = s_new  # Store s_new
+    cut_map[(r_idx, s_idx)] = r_new  # Store r_new
+
+    return true
 end
 
 """
-    process_nzzz_case!(mesh, s_idx, r_idx, q_idx, p_idx, sdf_s, cut_map, params, tol, flipped)
+    process_nzzz_case!(mesh, s_idx, r_idx, q_idx, p_idx, sdf_s, cut_map, params, tol)
 
-Process NZZZ case: one node outside (negative SDF), three on surface (zero SDF).
-
-Warps single negative node to surface with relaxed safety checks (safer case).
-
-# Arguments
-- `mesh::BlockMesh`: The tetrahedral mesh
-- `s_idx, r_idx, q_idx, p_idx::Int`: Node indices (sorted by SDF)
-- `sdf_s::Float64`: SDF value at node s (negative)
-- `cut_map::Dict`: Cache for avoiding duplicate node creation
-- `params::CaseParams`: Safety parameters (relaxed for this case)
-- `tol::Float64`: Tolerance for surface detection
-- `flipped::Bool`: Indicates if element orientation was flipped during sorting
-
-# Returns
-- `Vector{Vector{Int64}}`: New tetrahedron if all checks pass, empty vector otherwise
+Returns `true` if warping succeeded and new element is valid, `false` otherwise.
 """
 function process_nzzz_case!(
     mesh::BlockMesh,
@@ -521,15 +467,12 @@ function process_nzzz_case!(
     cut_map::Dict{Tuple{Int,Int},Int},
     params::CaseParams,
     tol::Float64,
-    flipped::Bool,
-)::Vector{Vector{Int64}}
-
+)::Bool
     # Safety check 1: Original centroid distance from surface (relaxed threshold)
-    # Relaxed threshold protože warpujeme jen jeden uzel (bezpečnější)
     original_centroid =
         (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
     if abs(eval_sdf(mesh, original_centroid)) > params.threshold_distance
-        return Vector{Vector{Int64}}()
+        return false
     end
 
     # Calculate original element volume for comparison
@@ -540,62 +483,42 @@ function process_nzzz_case!(
         ) / 6.0
 
     # Warp single negative node to the isosurface
-    # Pouze jeden uzel s negativním SDF se přesune na isosurface
     s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
 
     # Safety check 2: Node displacement limit (relaxed for single node)
-    # Relaxed limit protože warpujeme jen jeden uzel
     if norm(s_warped - mesh.X[s_idx]) > params.max_node_displacement
-        return Vector{Vector{Int64}}()
+        return false
     end
 
     # Add warped node to mesh
     s_new = add_warped_node!(mesh, s_warped, cut_map)
-
-    # Create tetrahedron with correct orientation based on flipped flag
-    # Pro NZZZ case: swap s_new s r_idx když je flipped
-    new_tet = if flipped
-        [r_idx, s_new, q_idx, p_idx]  # Flipped order - swap first two nodes
-    else
-        [s_new, r_idx, q_idx, p_idx]  # Normal order
-    end
-
-    # println(flipped)
+    new_tet = [s_new, r_idx, q_idx, p_idx]
 
     # Safety check 3: Volume ratio (relaxed minimum)
-    # Relaxed threshold protože deformace je menší (jen jeden warpovaný uzel)
-    v_new = [mesh.X[new_tet[1]], mesh.X[new_tet[2]], mesh.X[new_tet[3]], mesh.X[new_tet[4]]]
+    v_new = [mesh.X[s_new], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
     vol_new =
         abs(dot(cross(v_new[2] - v_new[1], v_new[3] - v_new[1]), v_new[4] - v_new[1])) / 6.0
 
     if vol_new < params.min_volume_ratio * vol_orig
-        return Vector{Vector{Int64}}()
+        return false
     end
 
     # Safety check 4: New centroid must be inside geometry
-    # Centrum musí zůstat uvnitř geometrie
-    centroid =
-        (
-            mesh.X[new_tet[1]] +
-            mesh.X[new_tet[2]] +
-            mesh.X[new_tet[3]] +
-            mesh.X[new_tet[4]]
-        ) / 4.0
+    centroid = (mesh.X[s_new] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
     if eval_sdf(mesh, centroid) <= tol
-        return Vector{Vector{Int64}}()
+        return false
     end
 
     # Safety check 5: Correct element orientation
-    # Finální kontrola orientace s možností opravy
     fix_tetrahedron_orientation!(mesh, new_tet)
-
-    # Verify orientation is correct after fix attempt
     if !check_tetrahedron_orientation(mesh, new_tet)
-        @warn "NZZZ case: Failed to achieve positive orientation for tet $new_tet"
-        return Vector{Vector{Int64}}()
+        return false
     end
 
-    return [new_tet]
+    # Store the new node index for retrieval
+    cut_map[(s_idx, 0)] = s_new
+
+    return true
 end
 
 """
@@ -616,6 +539,7 @@ function apply_stencil_trim_spikes!(
     node_indices = tet
     node_sdf = [mesh.node_sdf[idx] for idx in node_indices]
     tol = mesh.grid_tol
+    old_tet = tet
 
     # --- Special cases handling ---
     # Case 1: All nodes outside (SDF < -tol) - discard tetrahedron (NNNN case)
@@ -724,11 +648,12 @@ function apply_stencil_trim_spikes!(
     if is_s_neg && is_p_zero # Cases: NNNZ, NNZZ, NZZZ
         if is_s_neg && is_r_neg && is_q_neg && is_p_zero
             # NNNZ: Three nodes outside, one on surface
+            # Too risky - warping 3 nodes simultaneously could cause mesh intersections
             return Vector{Vector{Int64}}()
 
         elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero
-            # NNZZ: Two nodes outside, two on surface
-            return process_nnzz_case!(
+            # NNZZ: Two nodes outside, two on surface - use strict parameters
+            success = process_nnzz_case!(
                 mesh,
                 s_idx,
                 r_idx,
@@ -739,12 +664,17 @@ function apply_stencil_trim_spikes!(
                 cut_map,
                 warp_params.nnzz,
                 tol,
-                flipped,  # ← PŘIDÁN PARAMETR
             )
+            if success
+                return [old_tet]
+            else
+                return Vector{Vector{Int64}}()
+            end
+
 
         elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
-            # NZZZ: One node outside, three on surface
-            return process_nzzz_case!(
+            # NZZZ: One node outside, three on surface - use relaxed parameters
+            success = process_nzzz_case!(
                 mesh,
                 s_idx,
                 r_idx,
@@ -754,8 +684,13 @@ function apply_stencil_trim_spikes!(
                 cut_map,
                 warp_params.nzzz,
                 tol,
-                flipped,  # ← PŘIDÁN PARAMETR
             )
+
+            if success
+                return [old_tet]
+            else
+                return Vector{Vector{Int64}}()
+            end
         else
             println("  -> NO MATCH!")
             return Vector{Vector{Int64}}()
