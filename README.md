@@ -1,6 +1,6 @@
 # Implicit2TetMesh.jl
 
-A Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs). It transforms smooth implicit surfaces into finite element tetrahedral mesh while preserving geometric features and ensuring element quality. The package includes quality assessment, and geometric modification capabilities.
+Implicit2TetMesh is an experimental Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs). Implementation details are provided in the documentation below, with practical examples available in test/Examples.
 
 <div style="display: flex; justify-content: center; align-items: center; gap: 10px;">
   <img src="doc/beam.png" style="height: 270px; max-width: 50%;" alt="Original beam geometry" />
