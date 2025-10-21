@@ -10,10 +10,6 @@ using .Fundamentals
 include("GenerateMesh/GenerateMesh.jl")
 using .GenerateMesh
 
-# Mesh optimization (Laplacian smoothing, quality metrics)
-include("Optimization/Optimization.jl")
-using .Optimization
-
 # Mesh modification (cutting planes)
 include("Modification/Modification.jl")
 using .Modification

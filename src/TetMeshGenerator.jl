@@ -8,14 +8,12 @@ Configuration options for tetrahedral mesh generation.
 - `warp_param::Float64`: Parameter controlling warping behavior (default: 0.3)
 - `plane_definitions::Union{Vector{PlaneDefinition}, Nothing}`: Optional cutting planes (default: nothing)
 - `quality_export::Bool`: Whether to export mesh with quality metrics (default: false)
-- `optimize::Bool`: Whether to perform mesh optimization (default: true)
 """
 struct MeshGenerationOptions
     scheme::String
     warp_param::Float64
     plane_definitions::Union{Vector{PlaneDefinition},Nothing}
     quality_export::Bool
-    optimize::Bool
     correct_volume::Bool
     experimental_nzzz::Bool
 
@@ -25,7 +23,6 @@ struct MeshGenerationOptions
         warp_param::Float64 = 0.3,
         plane_definitions::Union{Vector{PlaneDefinition},Nothing} = nothing,
         quality_export::Bool = false,
-        optimize::Bool = true,
         correct_volume::Bool = false,
         experimental_nzzz::Bool = false,
     )
@@ -44,7 +41,6 @@ struct MeshGenerationOptions
             warp_param,
             plane_definitions,
             quality_export,
-            optimize,
             correct_volume,
             experimental_nzzz,
         )
@@ -148,11 +144,6 @@ function generate_tetrahedral_mesh(
     @info "Computing mesh volumes..."
     TetMesh_volumes(mesh)
 
-    # Step 11: Optimize the mesh if requested
-    if options.optimize
-        optimize_mesh!(mesh, options.scheme)
-    end
-
     if options.correct_volume
         success = correct_mesh_volume!(
             mesh,
@@ -212,11 +203,4 @@ mesh = generate_tetrahedral_mesh(
     )
 )
 
-# Example 3: Without mesh optimization
-mesh = generate_tetrahedral_mesh(
-    "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-1_Interpolation.jld2",
-    "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-1_Interpolation.jld2",
-    "cantilever_beam_interp_nopt",
-    options=MeshGenerationOptions(optimize = false)
-)
 """

@@ -88,7 +88,6 @@ function main()
         warp_param = 0.1,            # Small warping parameter for precise boundary alignment
         plane_definitions = plane_definitions,  # Apply boundary plane constraints
         quality_export = true,       # Export detailed quality metrics for analysis
-        optimize = true,             # Enable mesh optimization for better element quality
         split_elements = true,       # Use element splitting for accurate isosurface representation
         correct_volume = true,        # Apply volume correction to match reference geometry
     )
@@ -98,7 +97,6 @@ function main()
     println("  Discretization scheme: $(options.scheme)")
     println("  Warp parameter: $(options.warp_param)")
     println("  Quality export: $(options.quality_export)")
-    println("  Mesh optimization: $(options.optimize)")
     println("  Element splitting: $(options.split_elements)")
     println("  Volume correction: $(options.correct_volume)")
     println()

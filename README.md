@@ -1,6 +1,6 @@
 # Implicit2TetMesh.jl
 
-A Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs). It transforms smooth implicit surfaces into finite element tetrahedral mesh while preserving geometric features and ensuring element quality. The package includes robust mesh optimization, quality assessment, and geometric modification capabilities.
+A Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs). It transforms smooth implicit surfaces into finite element tetrahedral mesh while preserving geometric features and ensuring element quality. The package includes quality assessment, and geometric modification capabilities.
 
 <div style="display: flex; justify-content: center; align-items: center; gap: 10px;">
   <img src="doc/beam.png" style="height: 270px; max-width: 50%;" alt="Original beam geometry" />
@@ -12,7 +12,6 @@ A Julia package for generating high-quality tetrahedral meshes from implicit geo
 - **Robust Meshing**: Creates high-quality tetrahedral meshes from implicit surfaces using Isosurface Stuffing algorithm
 - **Multiple Discretization Schemes**: A15 and Schlafli schemes
 - **Volume preservation**: Ability to precisely preserve volume of implicit geometry with support for geometric constraints (bounded planes)
-- **Mesh Optimization**: Includes Laplacian smoothing and adaptive quality-based optimization
 - **Geometric Modifications**: Support for cutting planes and boundary refinement
 - **Quality Control**: Quality metrics and visualization tools
 
@@ -42,7 +41,6 @@ MeshGenerationOptions(;
     warp_param=0.3,                        # Parameter controlling warping behavior
     plane_definitions=nothing,             # Optional cutting planes
     quality_export=false,                  # Whether to export mesh with quality metrics
-    optimize=true,                         # Whether to perform mesh optimization
     split_elements=true                    # Whether to split elements along the isosurface
 )
 ```
@@ -66,10 +64,6 @@ MeshGenerationOptions(;
 #### quality_export::Bool
 - Controls whether detailed quality metrics are included in output files
 - Default: `false`
-
-#### optimize::Bool
-- Determines whether mesh optimization is performed
-- Default: `true`
 
 #### split_elements::Bool
 - Controls element handling at the isosurface boundary:
@@ -122,7 +116,6 @@ options = MeshGenerationOptions(
     warp_param = 0.5,
     plane_definitions = plane_definitions,
     quality_export = true,
-    optimize = true,
     split_elements = true
 )
 
@@ -160,4 +153,3 @@ TetMesh_volumes(mesh)
 
 ## TODO List
 - [ ] Parallel processing for large meshes
-- [ ] Further optimization of element quality metrics

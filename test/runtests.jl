@@ -3,7 +3,6 @@ using JLD2
 using Implicit2TetMesh
 using Implicit2TetMesh.Fundamentals
 using Implicit2TetMesh.GenerateMesh
-using Implicit2TetMesh.Optimization
 using Implicit2TetMesh.Modification
 using Implicit2TetMesh.Utils
 
@@ -62,8 +61,6 @@ include("GenerateMeshTests/validate_sdf_values.jl")
         remove_isolated_components!(mesh, keep_largest = true)
         update_connectivity!(mesh)
 
-        # optimize_mesh!(mesh, scheme)
-
         # Korekce objemu
         success = correct_mesh_volume!(
             mesh,
@@ -112,7 +109,6 @@ include("GenerateMeshTests/validate_sdf_values.jl")
 
         options=MeshGenerationOptions(
             scheme = "A15",
-            optimize = true,
             split_elements = false,
             quality_export = true,
             warp_param = 0.0,
@@ -198,7 +194,6 @@ include("GenerateMeshTests/validate_sdf_values.jl")
             warp_param = 0.3,            # Small warping parameter for precise boundary alignment
             plane_definitions = plane_definitions,  # Apply boundary plane constraints
             quality_export = true,       # Export detailed quality metrics for analysis
-            optimize = false,             # Enable mesh optimization for better element quality
             split_elements = true,       # Use element splitting for accurate isosurface representation
             correct_volume = true,        # Apply volume correction to match reference geometry
         )
@@ -208,7 +203,6 @@ include("GenerateMeshTests/validate_sdf_values.jl")
         println("  Discretization scheme: $(options.scheme)")
         println("  Warp parameter: $(options.warp_param)")
         println("  Quality export: $(options.quality_export)")
-        println("  Mesh optimization: $(options.optimize)")
         println("  Element splitting: $(options.split_elements)")
         println("  Volume correction: $(options.correct_volume)")
         println()

@@ -13,7 +13,6 @@ mesh = generate_tetrahedral_mesh(
     "cantilever_beam_interp_cut",
     options = MeshGenerationOptions(
         scheme = "Schlafli",
-        optimize = false,                     # Enable mesh optimization for better element quality
         warp_param = 0.3,
         # plane_definitions = plane_definitions
     ),
