@@ -1,73 +1,6 @@
 # Functions for tetrahedral mesh slicing along an isosurface
 # Implements the "trim spikes" algorithm for accurate surface representation
 
-# ----------------------------
-# Warping safety parameters
-# ----------------------------
-
-"""
-    CaseParams
-
-Safety parameters for a specific warping case (NNZZ or NZZZ).
-
-# Fields
-- `threshold_distance::Float64`: Maximum distance of centroid from isosurface for warping
-- `max_node_displacement::Float64`: Maximum allowed node displacement during warping
-- `min_volume_ratio::Float64`: Minimum volume ratio relative to original element
-"""
-struct CaseParams
-    threshold_distance::Float64
-    max_node_displacement::Float64
-    min_volume_ratio::Float64
-end
-
-"""
-    WarpingSafetyParams
-
-Container for safety parameters for different warping cases.
-
-# Fields
-- `nnzz::CaseParams`: Parameters for NNZZ case (two nodes outside, two on surface)
-- `nzzz::CaseParams`: Parameters for NZZZ case (one node outside, three on surface)
-"""
-struct WarpingSafetyParams
-    nnzz::CaseParams
-    nzzz::CaseParams
-end
-
-"""
-    create_warping_params(scheme::String, grid_step::Float64) -> WarpingSafetyParams
-
-Create scheme-specific safety parameters for warping operations.
-
-NNZZ case (2 nodes warped) uses stricter parameters.
-NZZZ case (1 node warped) uses relaxed parameters.
-
-# Arguments
-- `scheme::String`: Discretization scheme ("A15" or "Schlafli")
-- `grid_step::Float64`: Mesh grid step size
-
-# Returns
-- `WarpingSafetyParams`: Safety parameters for warping operations
-"""
-function create_warping_params(scheme::String, grid_step::Float64)
-    if scheme == "A15"
-        base_threshold = 0.15 * grid_step
-        # NNZZ: Strict parameters (warping 2 nodes simultaneously)
-        nnzz = CaseParams(base_threshold, 0.2 * grid_step, 0.05)
-        # NZZZ: Relaxed parameters (warping only 1 node)
-        nzzz = CaseParams(2.0 * base_threshold, 0.4 * grid_step, 0.025)
-    elseif scheme == "Schlafli"
-        base_threshold = 0.3 * grid_step
-        nnzz = CaseParams(base_threshold, 0.4 * grid_step, 0.05)
-        nzzz = CaseParams(2.0 * base_threshold, 0.8 * grid_step, 0.025)
-    else
-        error("Unknown scheme: $scheme")
-    end
-
-    return WarpingSafetyParams(nnzz, nzzz)
-end
-
 """
     slice_ambiguous_tetrahedra!(mesh::BlockMesh)
 
@@ -415,8 +348,19 @@ function process_nzzz_case!(
 
     # Safety check 5: Correct element orientation
     fix_tetrahedron_orientation!(mesh, new_tet)
-    return check_tetrahedron_orientation(mesh, new_tet) ? [new_tet] :
-           Vector{Vector{Int64}}()
+    if !check_tetrahedron_orientation(mesh, new_tet)
+        return Vector{Vector{Int64}}()
+    end
+
+    # Safety check 6: Dihedral angle limits (both min and max)
+    min_dihedral, max_dihedral = compute_dihedral_angle_range(mesh, new_tet)
+
+    # Reject if any angle is too small (< 10°) or too large (> 140°)
+    if min_dihedral < params.min_dihedral_angle || max_dihedral > params.max_dihedral_angle
+        return Vector{Vector{Int64}}()
+    end
+
+    return [new_tet]
 end
 
 """
@@ -549,7 +493,6 @@ function apply_stencil_trim_spikes!(
             return Vector{Vector{Int64}}()
 
         elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero
-            # NNZZ: Two nodes outside, two on surface - use strict parameters
             return Vector{Vector{Int64}}()
 
         elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
