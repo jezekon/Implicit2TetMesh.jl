@@ -138,11 +138,17 @@ function generate_tetrahedral_mesh(
     update_connectivity!(mesh)
     remove_inverted_elements!(mesh)
 
-    # Step 8: Compute and display tetrahedra volume information
+    # NEW Step 8: Remove isolated/disconnected components
+    remove_isolated_components!(mesh, keep_largest = true)
+
+    # Step 9: Final connectivity update
+    update_connectivity!(mesh)
+
+    # Step 10: Compute and display tetrahedra volume information
     @info "Computing mesh volumes..."
     TetMesh_volumes(mesh)
 
-    # Step 9: Optimize the mesh if requested
+    # Step 11: Optimize the mesh if requested
     if options.optimize
         optimize_mesh!(mesh, options.scheme)
     end
@@ -157,12 +163,12 @@ function generate_tetrahedral_mesh(
         )
     end
 
-    # Step 10: Export the initial mesh to VTK format
+    # Step 12: Export the initial mesh to VTK format
     output_file = "$(output_prefix)_TriMesh-$(options.scheme).vtu"
     @info "Exporting mesh to $output_file..."
     export_mesh(mesh, output_file, options.quality_export)
 
-    # Step 11: Apply cutting planes if defined
+    # Step 13: Apply cutting planes if defined
     if options.plane_definitions !== nothing && options.warp_param !== 0.0
         @info "Applying cutting planes with warp_param = $(options.warp_param)..."
         warp_mesh_by_planes_sdf!(mesh, options.plane_definitions, options.warp_param)

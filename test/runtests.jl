@@ -45,8 +45,8 @@ include("GenerateMeshTests/validate_sdf_values.jl")
         # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-step_warp$(scheme).vtu")
         stats = validate_node_sdf_values(mesh, 0.005)
 
-        # experimental_nzzz = true
-        experimental_nzzz = false
+        experimental_nzzz = true
+        # experimental_nzzz = false
         slice_ambiguous_tetrahedra!(mesh, scheme, experimental_nzzz) # Remove elements outside the body
         export_mesh_vtu(mesh, "$(taskName)_3-Sliced-$(scheme).vtu")
 
@@ -58,6 +58,10 @@ include("GenerateMeshTests/validate_sdf_values.jl")
 
         remove_inverted_elements!(mesh)
         update_connectivity!(mesh)
+
+        remove_isolated_components!(mesh, keep_largest = true)
+        update_connectivity!(mesh)
+
         # optimize_mesh!(mesh, scheme)
 
         # Korekce objemu
