@@ -45,34 +45,36 @@ include("GenerateMeshTests/validate_sdf_values.jl")
         # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-step_warp$(scheme).vtu")
         stats = validate_node_sdf_values(mesh, 0.005)
 
-        slice_ambiguous_tetrahedra!(mesh) # Remove elements outside the body
+        # experimental_nzzz = true
+        experimental_nzzz = false
+        slice_ambiguous_tetrahedra!(mesh, scheme, experimental_nzzz) # Remove elements outside the body
         export_mesh_vtu(mesh, "$(taskName)_3-Sliced-$(scheme).vtu")
 
         stats = validate_node_sdf_values(mesh, 0.005)
 
-        # update_connectivity!(mesh)
-        #
-        # TetMesh_volumes(mesh)
-        #
-        # remove_inverted_elements!(mesh)
-        # update_connectivity!(mesh)
-        # # optimize_mesh!(mesh, scheme)
-        #
-        # # Korekce objemu
-        # success = correct_mesh_volume!(
-        #     mesh,
-        #     fine_sdf,
-        #     fine_grid,
-        #     scheme,
-        #     plane_definitions = plane_definitions,
-        # )
-        # remove_inverted_elements!(mesh)
-        #
-        # # Vyhodnocení přesnosti
-        # # assess_volume_accuracy(mesh, fine_sdf, fine_grid)
-        #
-        # export_mesh_vtu(mesh, "$(taskName)_4-Corrected_Volume-$(scheme).vtu")
-        # # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-volume_modif_$(scheme).vtu")
+        update_connectivity!(mesh)
+
+        TetMesh_volumes(mesh)
+
+        remove_inverted_elements!(mesh)
+        update_connectivity!(mesh)
+        # optimize_mesh!(mesh, scheme)
+
+        # Korekce objemu
+        success = correct_mesh_volume!(
+            mesh,
+            fine_sdf,
+            fine_grid,
+            scheme,
+            plane_definitions = plane_definitions,
+        )
+        remove_inverted_elements!(mesh)
+
+        # Vyhodnocení přesnosti
+        # assess_volume_accuracy(mesh, fine_sdf, fine_grid)
+
+        export_mesh_vtu(mesh, "$(taskName)_4-Corrected_Volume-$(scheme).vtu")
+        # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-volume_modif_$(scheme).vtu")
     end
 
     #     # Apply cutting planes only if they are defined
