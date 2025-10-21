@@ -1,15 +1,30 @@
 # Functions for tetrahedral mesh slicing along an isosurface
-# Implements the "trim spikes" algorithm for accurate surface representation
 
 """
-    slice_ambiguous_tetrahedra!(mesh::BlockMesh)
+    slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String, experimental_nzzz::Bool)
 
 Slice tetrahedra crossing the isosurface (SDF zero level set).
 Identifies elements crossing the boundary and replaces them with smaller
 tetrahedra that accurately represent the surface.
+
+# Arguments
+- `mesh::BlockMesh`: The mesh to process
+- `scheme::String`: Discretization scheme ("A15" or "Schlafli")
+- `experimental_nzzz::Bool`: Enable experimental NZZZ case warping (default: false)
 """
-function slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String)
+function slice_ambiguous_tetrahedra!(
+    mesh::BlockMesh,
+    scheme::String,
+    experimental_nzzz::Bool = false,
+)
     @info "Slicing tetrahedra using trim_spikes logic..."
+
+    # Print experimental mode status
+    if experimental_nzzz
+        @info "  Experimental NZZZ case processing: ENABLED"
+    else
+        @info "  Experimental NZZZ case processing: DISABLED (conservative mode)"
+    end
 
     warp_params = create_warping_params(scheme, mesh.grid_step)
     cut_map = Dict{Tuple{Int,Int},Int}()
@@ -20,7 +35,8 @@ function slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String)
     mesh.IEN = Vector{Vector{Int64}}()
 
     for tet in current_IEN
-        resulting_tets = apply_stencil_trim_spikes!(mesh, tet, cut_map, warp_params)
+        resulting_tets =
+            apply_stencil_trim_spikes!(mesh, tet, cut_map, warp_params, experimental_nzzz)
         for nt in resulting_tets
             push!(new_IEN, nt)
         end
@@ -375,6 +391,7 @@ function apply_stencil_trim_spikes!(
     tet::Vector{Int64},
     cut_map::Dict{Tuple{Int,Int},Int},
     warp_params::WarpingSafetyParams,
+    experimental_nzzz::Bool = false,
 )::Vector{Vector{Int64}}
 
     # Get SDF values for tetrahedron nodes
@@ -497,17 +514,23 @@ function apply_stencil_trim_spikes!(
 
         elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
             # NZZZ: One node outside, three on surface - use relaxed parameters
-            return process_nzzz_case!(
-                mesh,
-                s_idx,
-                r_idx,
-                q_idx,
-                p_idx,
-                sdf_s,
-                cut_map,
-                warp_params.nzzz,
-                tol,
-            )
+            if experimental_nzzz
+
+                return process_nzzz_case!(
+                    mesh,
+                    s_idx,
+                    r_idx,
+                    q_idx,
+                    p_idx,
+                    sdf_s,
+                    cut_map,
+                    warp_params.nzzz,
+                    tol,
+                )
+            else
+                # Conservative mode: Discard element
+                return Vector{Vector{Int64}}()
+            end
         else
             println("  -> NO MATCH!")
             return Vector{Vector{Int64}}()

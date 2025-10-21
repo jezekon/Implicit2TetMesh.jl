@@ -17,6 +17,7 @@ struct MeshGenerationOptions
     quality_export::Bool
     optimize::Bool
     correct_volume::Bool
+    experimental_nzzz::Bool
 
     # Inner constructor with defaults
     function MeshGenerationOptions(;
@@ -26,6 +27,7 @@ struct MeshGenerationOptions
         quality_export::Bool = false,
         optimize::Bool = true,
         correct_volume::Bool = false,
+        experimental_nzzz::Bool = false,
     )
         # Validate scheme selection
         if !(scheme in ["A15", "Schlafli"])
@@ -37,7 +39,15 @@ struct MeshGenerationOptions
             error("Invalid warp_param: $warp_param. Must be non-negative (>= 0).")
         end
 
-        new(scheme, warp_param, plane_definitions, quality_export, optimize, correct_volume)
+        new(
+            scheme,
+            warp_param,
+            plane_definitions,
+            quality_export,
+            optimize,
+            correct_volume,
+            experimental_nzzz,
+        )
     end
 end
 
@@ -122,7 +132,7 @@ function generate_tetrahedral_mesh(
     update_connectivity!(mesh)
 
     # Step 6: Process the isosurface boundary using the selected method
-    slice_ambiguous_tetrahedra!(mesh, options.scheme)
+    slice_ambiguous_tetrahedra!(mesh, options.scheme, options.experimental_nzzz)
 
     # Step 7: Update mesh connectivity again after isosurface processing
     update_connectivity!(mesh)
