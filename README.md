@@ -1,6 +1,6 @@
 # Implicit2TetMesh.jl
 
-Implicit2TetMesh is an experimental Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs). Implementation details are provided in the documentation below, with practical examples available in test/Examples.
+Implicit2TetMesh is an experimental Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs). Implementation details are provided in the documentation below. For practical usage examples, see test/Examples.
 
 <div style="display: flex; justify-content: center; align-items: center; gap: 10px;">
   <img src="doc/beam.png" style="height: 270px; max-width: 50%;" alt="Original beam geometry" />
@@ -8,12 +8,11 @@ Implicit2TetMesh is an experimental Julia package for generating high-quality te
 </div>
 
 ## Features
-
-- **Robust Meshing**: Creates high-quality tetrahedral meshes from implicit surfaces using Isosurface Stuffing algorithm
-- **Multiple Discretization Schemes**: A15 and Schlafli schemes
-- **Volume preservation**: Ability to precisely preserve volume of implicit geometry with support for geometric constraints (bounded planes)
-- **Geometric Modifications**: Support for cutting planes and boundary refinement
-- **Quality Control**: Quality metrics and visualization tools
+- **Robust Meshing**: High-quality tetrahedral mesh generation from implicit geometries using A15 (body-centered cubic) and Schlafli (orthoscheme) discretizations
+- **Isosurface Refinement**: Advanced boundary processing with experimental NZZZ case handling for thin features relative to characteristic element size
+- **Volume Correction**: Precise volume preservation using automatic surface node adjustment
+- **Geometric Constraints**: Bounded plane definitions for selective node alignment
+- **Mesh Operations**: Slicing, isolated component removal, inverted element fixing, and VTU export with mesh quality metrics
 
 ## Function Input
 Main function for generating tetrahedral meshes from SDF data:
