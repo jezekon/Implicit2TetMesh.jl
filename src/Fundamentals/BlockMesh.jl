@@ -2,13 +2,13 @@
 # Block mesh structure
 # ----------------------------
 mutable struct BlockMesh
-    nx::Int
-    ny::Int
-    nz::Int
+    nx::Int                                    # Number of grid points in x-direction
+    ny::Int                                    # Number of grid points in y-direction
+    nz::Int                                    # Number of grid points in z-direction
     grid::Array{SVector{3,Float64},3}          # 3D array of node coordinates (basic grid) using static vectors
-    grid_step::Float64
-    grid_tol::Float64
-    SDF::Array{Float64,3}                      # SDF values
+    grid_step::Float64                         # Spatial step size between adjacent grid points (uniform spacing)
+    grid_tol::Float64                          # Geometric tolerance
+    SDF::Array{Float64,3}                      # Signed Distance Function values at each grid point
     X::Vector{SVector{3,Float64}}              # List of physical node coordinates (nodes used in mesh)
     IEN::Vector{Vector{Int64}}                 # Tetrahedral connectivity (elements)
     INE::Vector{Vector{Int64}}                 # Inverse connectivity: for each node, list of adjacent elements
