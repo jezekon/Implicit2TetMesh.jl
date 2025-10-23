@@ -1,4 +1,3 @@
-
 *.jld2
 *.vtk
 *.vti
@@ -10,6 +9,7 @@
 *.smesh
 *.stl
 *.png
+*.sh
 
 !doc/*.png
 !doc/*.img
