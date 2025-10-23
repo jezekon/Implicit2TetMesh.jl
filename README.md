@@ -1,6 +1,6 @@
 # Implicit2TetMesh.jl
 
-Implicit2TetMesh is an experimental Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs), inspired by [isosurface stuffing algorithm](https://dl.acm.org/doi/10.1145/1276377.1276448). Implementation details are provided in the documentation below. For practical usage examples, see test/Examples.
+Implicit2TetMesh is an experimental Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs), inspired by [isosurface stuffing algorithm](https://dl.acm.org/doi/10.1145/1276377.1276448). Implementation details are provided in the documentation below. For practical usage examples, see [`test/Examples/`](test/Examples/).
 
 <!-- <div style="display: flex; justify-content: center; align-items: center; gap: 10px;">
   <img src="doc/beam.png" style="height: 270px; max-width: 50%;" alt="Original beam geometry" />
@@ -77,7 +77,7 @@ mesh = generate_tetrahedral_mesh(
 )
 ```
 ### Advanced Usage Examples
-For complete examples with detailed documentation, see `test/Examples/`:
+For complete examples with detailed documentation, see [`test/Examples/`](test/Examples/):
 ```julia
 # Run beam example
 julia --project=. test/Examples/beam.jl
