@@ -1,11 +1,14 @@
 # Implicit2TetMesh.jl
 
-Implicit2TetMesh is an experimental Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs). Implementation details are provided in the documentation below. For practical usage examples, see test/Examples.
+Implicit2TetMesh is an experimental Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs), inspired by [isosurface stuffing algorithm](https://dl.acm.org/doi/10.1145/1276377.1276448). Implementation details are provided in the documentation below. For practical usage examples, see [`test/Examples/`](test/Examples/).
 
-<div style="display: flex; justify-content: center; align-items: center; gap: 10px;">
+<!-- <div style="display: flex; justify-content: center; align-items: center; gap: 10px;">
   <img src="doc/beam.png" style="height: 270px; max-width: 50%;" alt="Original beam geometry" />
   <img src="doc/beam_cut.png" style="height: 270px; max-width: 50%;" alt="Sliced beam tetrahedral mesh" />
-</div>
+</div> -->
+<p align="center">
+  <img src="doc/gripper-half_sdf_half_tet.png" width="80%" alt="Raw topology optimization result" />
+</p>
 
 ## Features
 - **Robust Meshing**: High-quality tetrahedral mesh generation from implicit geometries using A15 (body-centered cubic) and Schlafli (orthoscheme) discretizations
@@ -14,83 +17,55 @@ Implicit2TetMesh is an experimental Julia package for generating high-quality te
 - **Geometric Constraints**: Bounded plane definitions for selective node alignment
 - **Mesh Operations**: Slicing, isolated component removal, inverted element fixing, and VTU export with mesh quality metrics
 
-## Function Input
-Main function for generating tetrahedral meshes from SDF data:
-
+## Installation
+```julia
+# From Julia REPL, press ] to enter package mode
+pkg> add https://github.com/jezekon/Implicit2TetMesh.jl
+```
+or
+```
+git clone https://github.com/jezekon/Implicit2TetMesh.jl
+```
+## Main Function
+Generate tetrahedral meshes from SDF data:
 ```julia
 generate_tetrahedral_mesh(grid_file, sdf_file, output_prefix; options=MeshGenerationOptions())
 ```
-
-### Parameters:
+#### Parameters:
 - `grid_file::String`: Path to the JLD2 file containing the grid data
 - `sdf_file::String`: Path to the JLD2 file containing the SDF values
 - `output_prefix::String`: Prefix for output files (default: "output")
 - `options::MeshGenerationOptions`: Configuration options (optional)
-
-### Return Value:
+#### Return Value:
 - `mesh::BlockMesh`: The generated tetrahedral mesh
-- `vtu`: Mesh visualization files in Paraview format
+- **Output files**: `.vtu` mesh visualization files for Paraview
 
-## MeshGenerationOptions
-The `MeshGenerationOptions` struct allows for customization of the mesh generation process:
+### MeshGenerationOptions
+
+Configure the mesh generation process with the following options:
 
 ```julia
 MeshGenerationOptions(;
-    scheme="A15",                          # Discretization scheme: "A15" or "Schlafli"
-    warp_param=0.3,                        # Parameter controlling warping behavior
-    plane_definitions=nothing,             # Optional cutting planes
-    quality_export=false,                  # Whether to export mesh with quality metrics
-    split_elements=true                    # Whether to split elements along the isosurface
+    scheme::String = "A15",                           # Discretization scheme: "A15" or "Schlafli"
+    warp_param::Float64 = 0.3,                        # Warping intensity for plane alignment (0.0 = disabled)
+    plane_definitions::Union{Vector{PlaneDefinition}, Nothing} = nothing,  # Cutting planes for BC application
+    quality_export::Bool = false,                     # Export detailed quality metrics
+    correct_volume::Bool = false,                     # Apply volume correction algorithm
+    experimental_nzzz::Bool = false                   # Enable experimental NZZZ case warping
 )
 ```
+#### Option Details
 
-### Options:
-#### scheme::String
-- Discretization scheme to use. Valid values:
-  - `"A15"` (default): Higher quality tetrahedral elements
-  - `"Schlafli"`: Alternative scheme with different element patterns
+- **scheme**: 
+  - `"A15"`: Body-centered cubic lattice discretization (recommended for most cases)
+  - `"Schlafli"`: Orthoscheme discretization (better for axis-aligned features)
+- **warp_param**: Controls how strongly nodes are attracted to cutting planes (0.0-1.0 range recommended)
+- **plane_definitions**: Vector of `PlaneDefinition` objects for boundary plane constraints
+- **quality_export**: When `true`, exports additional quality metrics (Jacobian determinants, dihedral angles, volume ratios)
+- **correct_volume**: Enables iterative volume correction to match reference SDF volume (may increase processing time)
+- **experimental_nzzz**: Enables experimental warping for NZZZ cases (one node outside, three on surface). Use with caution.
 
-#### warp_param::Float64
-- Parameter controlling the warping behavior for cutting planes
-- Must be non-negative (≥ 0)
-- Default: `0.3`
-
-#### plane_definitions::Union{Vector{PlaneDefinition}, Nothing}
-- Optional cutting planes for mesh modification
-- Use `PlaneDefinition` objects to define planes with different shapes
-- Default: `nothing` (no cutting planes)
-
-#### quality_export::Bool
-- Controls whether detailed quality metrics are included in output files
-- Default: `false`
-
-#### split_elements::Bool
-- Controls element handling at the isosurface boundary:
-  - `true` (default): Split elements along the isosurface for higher accuracy
-  - `false`: Move nodes to the isosurface without splitting elements
-
-## Plane Definitions
-For creating cutting planes to modify the mesh:
-
-```julia
-PlaneDefinition(normal, point, shape)
-```
-
-### Parameters:
-- `normal::Vector{Float64}`: Normal vector of the plane
-- `point::Vector{Float64}`: Point on the plane
-- `shape::PlaneShape`: Shape of the bounded plane (Rectangle, Square, Circle, or Ellipse)
-
-### Plane Shapes:
-```julia
-Rectangle(width, height)    # Rectangular bounded plane
-Square(size)                # Square bounded plane (special case of Rectangle)
-Circle(radius)              # Circular bounded plane
-Ellipse(a, b)               # Elliptical bounded plane
-```
-
-## Example Usage
-
+### Example Usage
 ```julia
 using Implicit2TetMesh
 
@@ -101,54 +76,19 @@ mesh = generate_tetrahedral_mesh(
     "beam"
 )
 ```
-## Advanced Example Usage
-
+### Advanced Usage Examples
+For complete examples with detailed documentation, see [`test/Examples/`](test/Examples/):
 ```julia
-# Advanced usage with custom options and cutting planes
-plane_definitions = [
-    PlaneDefinition([-1.0, 0.0, 0.0], [0.0, 10.0, 0.0], Square(30.0)),
-    PlaneDefinition([1.0, 0.0, 0.0], [60.0, 2.0, 2.0], Square(5.0))
-]
+# Run beam example
+julia --project=. test/Examples/beam.jl
 
-options = MeshGenerationOptions(
-    scheme = "A15",
-    warp_param = 0.5,
-    plane_definitions = plane_definitions,
-    quality_export = true,
-    split_elements = true
-)
-
-mesh = generate_tetrahedral_mesh(
-    "path/to/grid_data.jld2",
-    "path/to/sdf_data.jld2",
-    "beam_cut",
-    options=options
-)
-slice_mesh_with_plane!(mesh, "x", 0.5, -1) # sliced by yz plane in half, -1 (normal) -> delete every element before plane
-export_mesh_vtu(mesh, "sliced.vtu")
+julia --project=. test/Examples/gripper.jl
 ```
-
-## Quality Assessment
-
-The package provides comprehensive mesh quality assessment through:
-
-```julia
-assess_mesh_quality(mesh, output_prefix)
-```
-
-This function evaluates:
-- Geometric quality metrics (aspect ratio, dihedral angles, shape quality)
-- Element validity (inverted elements)
-- Boundary integrity
-- Element orientation consistency
-- Element intersections
-- Dihedral angle distribution with histogram visualization
-
-For quick volume checks:
-
-```julia
-TetMesh_volumes(mesh)
-```
-
+___
 ## TODO List
-- [ ] Parallel processing for large meshes
+- [ ] Improve NZZZ case handling based on dihedral angles
+- [ ] Add support for NNZZ cases (two nodes outside, two on surface)
+- [ ] Performance optimizations for large meshes
+
+## Acknowledgments
+This package is an experimental tool. Please validate results carefully.
