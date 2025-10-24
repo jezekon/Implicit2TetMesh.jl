@@ -1,44 +1,106 @@
 # Functions for tetrahedral mesh slicing along an isosurface
-# Implements the "trim spikes" algorithm for accurate surface representation
 
 """
-    slice_ambiguous_tetrahedra!(mesh::BlockMesh)
+    slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String, experimental_nzzz::Bool)
 
 Slice tetrahedra crossing the isosurface (SDF zero level set).
 Identifies elements crossing the boundary and replaces them with smaller
 tetrahedra that accurately represent the surface.
+
+# Arguments
+- `mesh::BlockMesh`: The mesh to process
+- `scheme::String`: Discretization scheme ("A15" or "Schlafli")
+- `experimental_nzzz::Bool`: Enable experimental NZZZ case warping (default: false)
 """
-function slice_ambiguous_tetrahedra!(mesh::BlockMesh)
-    @info "Slicing tetrahedra using trim_spikes logic (with element splitting)..."
-    new_IEN = Vector{Vector{Int64}}()
-    sizehint!(new_IEN, length(mesh.IEN)) # Pre-allocate for performance
+function slice_ambiguous_tetrahedra!(
+    mesh::BlockMesh,
+    scheme::String,
+    experimental_nzzz::Bool = false,
+)
+    @info "Slicing tetrahedra using trim_spikes logic..."
 
-    # Cache for storing cut edge results to avoid duplicate cutting
+    # Print experimental mode status
+    if experimental_nzzz
+        @info "  Experimental NZZZ case processing: ENABLED"
+    else
+        @info "  Experimental NZZZ case processing: DISABLED (conservative mode)"
+    end
+
+    warp_params = create_warping_params(scheme, mesh.grid_step)
     cut_map = Dict{Tuple{Int,Int},Int}()
+    new_IEN = Vector{Vector{Int64}}()
+    sizehint!(new_IEN, length(mesh.IEN))
 
-    original_node_count = length(mesh.X)
-    original_tet_count = length(mesh.IEN)
-
-    # Process original connectivity while building new connectivity
     current_IEN = mesh.IEN
-    mesh.IEN = Vector{Vector{Int64}}() # Clear current IEN temporarily
+    mesh.IEN = Vector{Vector{Int64}}()
 
     for tet in current_IEN
-        # Apply the trim_spikes stencil to each tetrahedron
-        resulting_tets = apply_stencil_trim_spikes!(mesh, tet, cut_map)
-
-        # Add valid resulting tetrahedra to the new connectivity list
+        resulting_tets =
+            apply_stencil_trim_spikes!(mesh, tet, cut_map, warp_params, experimental_nzzz)
         for nt in resulting_tets
             push!(new_IEN, nt)
         end
     end
 
-    mesh.IEN = new_IEN # Update mesh connectivity
-    new_tet_count = length(mesh.IEN)
+    mesh.IEN = new_IEN
+    println("  After slicing: $(length(mesh.IEN)) tetrahedra")
+end
 
-    println(
-        "  After trim_spikes slicing: $(new_tet_count) tetrahedra (removed $(original_tet_count - new_tet_count))",
-    )
+# ----------------------------
+# Helper function: Linear interpolation of the intersection with the zero level of SDF
+# ----------------------------
+function interpolate_zero(
+    p1::SVector{3,Float64},
+    p2::SVector{3,Float64},
+    f1::Float64,
+    f2::Float64,
+    mesh::BlockMesh;
+    tol = mesh.grid_tol,
+    max_iter = 20,
+)::Int64
+    # coords of positive point, coords of negative point, sdf of positive point, sdf of negative point
+
+    pos1 = f1 >= -tol
+    pos2 = f2 >= -tol
+    # If both points have the same polarity according to tolerance, interpolation cannot be done correctly.
+    if pos1 == pos2
+        error(
+            "Both points have the same 'tolerance' polarity; one point must be close to zero (positive) and the other significantly negative.",
+        )
+    end
+
+    # Initialize interval: low and high - assuming p1 and p2 are ordered by f
+    low, high = p1, p2
+    f_low, f_high = f1, f2
+    mid = low
+    for iter = 1:max_iter
+        mid = (low + high) / 2.0
+        f_mid = eval_sdf(mesh, mid)
+        # If the value is close enough to zero, end the iteration
+        if abs(f_mid) < tol
+            break
+        end
+        # Update one of the interval endpoints according to the sign of f_mid
+        if sign(f_mid) == sign(f_low)
+            low, f_low = mid, f_mid
+        else
+            high, f_high = mid, f_mid
+        end
+    end
+
+    # Quantize the found point to avoid duplicates in the hashtable
+    p_key = quantize(mid, tol)
+    sdf_of_iterp_point = eval_sdf(mesh, SVector{3,Float64}(p_key))
+    # println("check interp sdf: ", sdf_of_iterp_point)
+    if haskey(mesh.node_hash, p_key)
+        return mesh.node_hash[p_key]
+    else
+        push!(mesh.X, mid)
+        push!(mesh.node_sdf, 0.0)  # or set exactly to 0
+        new_index = length(mesh.X)
+        mesh.node_hash[p_key] = new_index
+        return new_index
+    end
 end
 
 """
@@ -189,7 +251,7 @@ function warp_node_to_surface(
     # Verify we reached the surface
     final_sdf = eval_sdf(mesh, current_pos)
     if abs(final_sdf) > tol * 100
-        @warn "Warp did not converge to surface: final SDF = $final_sdf"
+        # @warn "Warp did not converge to surface: final SDF = $final_sdf"
     end
 
     return current_pos
@@ -226,6 +288,97 @@ function add_warped_node!(
     return new_index
 end
 
+# ----------------------------
+# Case-specific warping handlers
+# ----------------------------
+"""
+    process_nzzz_case!(mesh, s_idx, r_idx, q_idx, p_idx, sdf_s, cut_map, params, tol)
+
+Process NZZZ case: one node outside (negative SDF), three on surface (zero SDF).
+
+Warps single negative node to surface with relaxed safety checks (safer case).
+
+# Arguments
+- `mesh::BlockMesh`: The tetrahedral mesh
+- `s_idx, r_idx, q_idx, p_idx::Int`: Node indices (sorted by SDF)
+- `sdf_s::Float64`: SDF value at node s (negative)
+- `cut_map::Dict`: Cache for avoiding duplicate node creation
+- `params::CaseParams`: Safety parameters (relaxed for this case)
+- `tol::Float64`: Tolerance for surface detection
+
+# Returns
+- `Vector{Vector{Int64}}`: New tetrahedron if all checks pass, empty vector otherwise
+"""
+function process_nzzz_case!(
+    mesh::BlockMesh,
+    s_idx::Int,
+    r_idx::Int,
+    q_idx::Int,
+    p_idx::Int,
+    sdf_s::Float64,
+    cut_map::Dict{Tuple{Int,Int},Int},
+    params::CaseParams,
+    tol::Float64,
+)::Vector{Vector{Int64}}
+
+    # Safety check 1: Original centroid distance from surface (relaxed threshold)
+    original_centroid =
+        (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
+    if abs(eval_sdf(mesh, original_centroid)) > params.threshold_distance
+        return Vector{Vector{Int64}}()
+    end
+
+    # Calculate original element volume for comparison
+    v_orig = [mesh.X[s_idx], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
+    vol_orig =
+        abs(
+            dot(cross(v_orig[2] - v_orig[1], v_orig[3] - v_orig[1]), v_orig[4] - v_orig[1]),
+        ) / 6.0
+
+    # Warp single negative node to the isosurface
+    s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
+
+    # Safety check 2: Node displacement limit (relaxed for single node)
+    if norm(s_warped - mesh.X[s_idx]) > params.max_node_displacement
+        return Vector{Vector{Int64}}()
+    end
+
+    # Add warped node to mesh
+    s_new = add_warped_node!(mesh, s_warped, cut_map)
+    new_tet = [s_new, r_idx, q_idx, p_idx]
+
+    # Safety check 3: Volume ratio (relaxed minimum)
+    v_new = [mesh.X[s_new], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
+    vol_new =
+        abs(dot(cross(v_new[2] - v_new[1], v_new[3] - v_new[1]), v_new[4] - v_new[1])) / 6.0
+
+    if vol_new < params.min_volume_ratio * vol_orig
+        return Vector{Vector{Int64}}()
+    end
+
+    # Safety check 4: New centroid must be inside geometry
+    centroid = (mesh.X[s_new] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
+    if eval_sdf(mesh, centroid) <= tol
+        return Vector{Vector{Int64}}()
+    end
+
+    # Safety check 5: Correct element orientation
+    fix_tetrahedron_orientation!(mesh, new_tet)
+    if !check_tetrahedron_orientation(mesh, new_tet)
+        return Vector{Vector{Int64}}()
+    end
+
+    # Safety check 6: Dihedral angle limits (both min and max)
+    min_dihedral, max_dihedral = compute_dihedral_angle_range(mesh, new_tet)
+
+    # Reject if any angle is too small (< 10°) or too large (> 140°)
+    if min_dihedral < params.min_dihedral_angle || max_dihedral > params.max_dihedral_angle
+        return Vector{Vector{Int64}}()
+    end
+
+    return [new_tet]
+end
+
 """
     apply_stencil_trim_spikes!(mesh::BlockMesh, tet::Vector{Int64}, cut_map::Dict{Tuple{Int, Int}, Int})
 
@@ -237,6 +390,8 @@ function apply_stencil_trim_spikes!(
     mesh::BlockMesh,
     tet::Vector{Int64},
     cut_map::Dict{Tuple{Int,Int},Int},
+    warp_params::WarpingSafetyParams,
+    experimental_nzzz::Bool = false,
 )::Vector{Vector{Int64}}
 
     # Get SDF values for tetrahedron nodes
@@ -347,74 +502,39 @@ function apply_stencil_trim_spikes!(
         push!(new_tets, t)
     end
 
-    # --- Case analysis based on SDF sign patterns --- (S=<R=<Q=<P)
-    if is_s_neg && is_p_zero # NNNZ, NNZZ, NZZZ
-        # Compute centroid to check if element should be preserved
-        centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-        centroid_sdf = eval_sdf(mesh, centroid)
+    # --- Case analysis based on SDF sign patterns --- (S ≤ R ≤ Q ≤ P)
+    if is_s_neg && is_p_zero # Cases: NNNZ, NNZZ, NZZZ
+        if is_s_neg && is_r_neg && is_q_neg && is_p_zero
+            # NNNZ: Three nodes outside, one on surface
+            # Too risky - warping 3 nodes simultaneously could cause mesh intersections
+            return Vector{Vector{Int64}}()
 
-        # If centroid is inside (positive SDF), we need to handle this carefully
-        if centroid_sdf > tol
-            # Identify which specific case we're in
-            if is_s_neg && is_r_neg && is_q_neg && is_p_zero
-                # NNNZ - three nodes outside, one on surface
-                # This is very thin, likely discard
+        elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero
+            return Vector{Vector{Int64}}()
+
+        elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
+            # NZZZ: One node outside, three on surface - use relaxed parameters
+            if experimental_nzzz
+
+                return process_nzzz_case!(
+                    mesh,
+                    s_idx,
+                    r_idx,
+                    q_idx,
+                    p_idx,
+                    sdf_s,
+                    cut_map,
+                    warp_params.nzzz,
+                    tol,
+                )
+            else
+                # Conservative mode: Discard element
                 return Vector{Vector{Int64}}()
-
-            elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero
-                # NNZZ - two nodes outside, two on surface
-                # Warp negative nodes to surface and create new element
-
-                # Warp both negative nodes to surface
-                s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
-                r_warped = warp_node_to_surface(mesh, mesh.X[r_idx], sdf_r)
-
-                # Add new warped nodes to mesh
-                s_new = add_warped_node!(mesh, s_warped, cut_map)
-                r_new = add_warped_node!(mesh, r_warped, cut_map)
-
-                # Create new tetrahedron with warped nodes
-                new_tet = [s_new, r_new, q_idx, p_idx]
-
-                # Fix orientation if needed
-                fix_tetrahedron_orientation!(mesh, new_tet)
-
-                # Verify orientation
-                if check_tetrahedron_orientation(mesh, new_tet)
-                    return [new_tet]
-                else
-                    @warn "NNZZ warped tetrahedron has bad orientation, discarding"
-                    return Vector{Vector{Int64}}()
-                end
-
-            elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
-                # NZZZ - one node outside, three on surface
-                # Warp the single negative node to surface
-
-                # Warp negative node to surface
-                s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
-
-                # Add new warped node to mesh
-                s_new = add_warped_node!(mesh, s_warped, cut_map)
-
-                # Create new tetrahedron with warped node
-                new_tet = [s_new, r_idx, q_idx, p_idx]
-
-                # Fix orientation if needed
-                fix_tetrahedron_orientation!(mesh, new_tet)
-
-                # Verify orientation
-                if check_tetrahedron_orientation(mesh, new_tet)
-                    return [new_tet]
-                else
-                    @warn "NZZZ warped tetrahedron has bad orientation, discarding"
-                    return Vector{Vector{Int64}}()
-                end
             end
+        else
+            println("  -> NO MATCH!")
+            return Vector{Vector{Int64}}()
         end
-
-        # If centroid is negative or we didn't match specific cases, discard
-        return Vector{Vector{Int64}}()
 
         # Case (Z,!N,!N,P): Surface node with all others on surface or inside
     elseif is_s_zero && !is_r_neg && !is_q_neg && is_p_pos # ZZZP, ZZPP, ZPPP
@@ -423,7 +543,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NNNP: Three nodes outside, one inside
     elseif is_s_neg && is_r_neg && is_q_neg && is_p_pos
-        # println("NNNP")
         # Cut three edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -438,7 +557,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NPPP: One node outside, three inside
     elseif is_s_neg && is_r_pos
-        # println("NPPP")
         if !is_r_neg && !is_q_neg # Confirm r, q, p are interior nodes
             # Cut edges from outside node to each interior node
             sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map)
@@ -462,7 +580,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NNPP: Two nodes outside, two inside
     elseif is_r_neg && is_q_pos
-        # println("NNPP")
         # Cut all four edges crossing the isosurface
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -482,7 +599,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NZPP: One outside, one on surface, two inside
     elseif is_s_neg && is_r_zero && is_q_pos
-        # println("NZPP")
         # Cut edges from outside node to interior nodes
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
@@ -498,7 +614,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NNZP: Two outside, one on surface, one inside
     elseif is_r_neg && is_q_zero && is_p_pos
-        # println("NNZP")
         # Cut edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -512,7 +627,6 @@ function apply_stencil_trim_spikes!(
 
         # Case NZZP: One outside, two on surface, one inside
     elseif is_s_neg && is_r_zero && is_q_zero && is_p_pos
-        # println("NZZP")
         # Cut edge from outside node to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
 
@@ -531,107 +645,150 @@ function apply_stencil_trim_spikes!(
     return new_tets
 end
 
+const RED = "\e[31m"
+const BOLD = "\e[1m"
+const RESET = "\e[0m"
+
 """
-    fix_tetrahedra_orientation!(mesh::BlockMesh)
+    remove_inverted_elements!(mesh::BlockMesh)
 
-Checks and fixes the orientation of all tetrahedral elements in the mesh
-by ensuring each element has a positive Jacobian determinant (positive volume).
-Elements with negative determinants are fixed by reordering their nodes.
+Improves mesh quality by fixing inverted tetrahedra and removing degenerate elements.
 
-# Arguments
-- `mesh::BlockMesh`: The mesh to check and fix
-- `tol::Float64`: Tolerance for considering volume as zero (default: 1e-12)
+This function:
+1. Attempts to fix elements with negative Jacobian determinant (inverted elements)
+   by reordering their vertices to achieve positive orientation
+2. Removes elements with near-zero volume (degenerate elements)
+3. Updates mesh connectivity to remove orphaned nodes
+4. Rebuilds the inverse node-to-element connectivity (INE)
 
-# Returns
-- Number of elements that were fixed
+Returns the modified mesh.
 """
-function fix_tetrahedra_orientation!(mesh::BlockMesh, tol::Float64 = 1e-12)
-    fixed_count = 0
-    degenerate_count = 0
-    failed_count = 0
+function remove_inverted_elements!(mesh::BlockMesh)
+    @info "Fixing elements orientation..."
+    # Set tolerance for identifying near-zero volumes
+    volume_tolerance = mesh.grid_tol * 1e-6
 
-    @info "Checking and fixing tetrahedra orientation..."
+    # Track statistics for reporting
+    fixed_elements = 0
+    failed_fixes = 0
+    zero_volume_elements = 0
+
+    # Process elements: fix inverted elements, remove near-zero volume elements
+    valid_elements = Vector{Vector{Int}}()
+    sizehint!(valid_elements, length(mesh.IEN))
 
     for (elem_idx, tet) in enumerate(mesh.IEN)
-        # Skip elements with duplicate nodes
+        # Skip degenerate elements with duplicate vertices
         if length(Set(tet)) != 4
-            degenerate_count += 1
+            zero_volume_elements += 1
             continue
         end
 
-        # Get vertices of the tetrahedron
-        vertices = [mesh.X[node_idx] for node_idx in tet]
-
-        # Calculate edge vectors from first vertex
+        # Calculate determinant (proportional to signed volume)
+        vertices = SVector{4,SVector{3,Float64}}(
+            mesh.X[tet[1]],
+            mesh.X[tet[2]],
+            mesh.X[tet[3]],
+            mesh.X[tet[4]],
+        )
         a = vertices[2] - vertices[1]
         b = vertices[3] - vertices[1]
         c = vertices[4] - vertices[1]
-
-        # Calculate Jacobian determinant (6 times the volume)
         det_value = dot(a, cross(b, c))
 
-        # Check if element has negative or zero volume
-        if det_value <= tol
-            # Try to fix by swapping nodes 3 and 4
-            mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] =
-                mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3]
+        # Remove elements with near-zero volume
+        if abs(det_value) <= volume_tolerance
+            zero_volume_elements += 1
+            continue
+        end
 
-            # Check if the fix worked
-            vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
-            a = vertices[2] - vertices[1]
-            b = vertices[3] - vertices[1]
-            c = vertices[4] - vertices[1]
-            new_det = dot(a, cross(b, c))
+        # Fix elements with negative determinant
+        if det_value < 0
+            # Strategy 1: Swap vertices 3 and 4
+            tet_copy = copy(tet)
+            tet_copy[3], tet_copy[4] = tet_copy[4], tet_copy[3]
 
-            if new_det > tol
-                fixed_count += 1
-            else
-                # If that didn't work, try swapping nodes 1 and 2
-                mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][4] =
-                    mesh.IEN[elem_idx][4], mesh.IEN[elem_idx][3] # Restore
-                mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] =
-                    mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1]
+            # Check if fix worked
+            new_vertices = SVector{4,SVector{3,Float64}}(
+                mesh.X[tet_copy[1]],
+                mesh.X[tet_copy[2]],
+                mesh.X[tet_copy[3]],
+                mesh.X[tet_copy[4]],
+            )
+            new_a = new_vertices[2] - new_vertices[1]
+            new_b = new_vertices[3] - new_vertices[1]
+            new_c = new_vertices[4] - new_vertices[1]
+            new_det = dot(new_a, cross(new_b, new_c))
 
-                # Check again
-                vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
-                a = vertices[2] - vertices[1]
-                b = vertices[3] - vertices[1]
-                c = vertices[4] - vertices[1]
-                new_det = dot(a, cross(b, c))
-
-                if new_det > tol
-                    fixed_count += 1
-                else
-                    # Restore and try one more swap
-                    mesh.IEN[elem_idx][1], mesh.IEN[elem_idx][2] =
-                        mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][1] # Restore
-                    mesh.IEN[elem_idx][2], mesh.IEN[elem_idx][3] =
-                        mesh.IEN[elem_idx][3], mesh.IEN[elem_idx][2]
-
-                    vertices = [mesh.X[node_idx] for node_idx in mesh.IEN[elem_idx]]
-                    a = vertices[2] - vertices[1]
-                    b = vertices[3] - vertices[1]
-                    c = vertices[4] - vertices[1]
-                    new_det = dot(a, cross(b, c))
-
-                    if new_det > tol
-                        fixed_count += 1
-                    else
-                        failed_count += 1
-                    end
-                end
+            if new_det > volume_tolerance
+                # Fix successful - element has positive volume and is not near-zero
+                push!(valid_elements, tet_copy)
+                fixed_elements += 1
+                continue
             end
+
+            # Strategy 2: Swap vertices 1 and 2
+            tet_copy = copy(tet)
+            tet_copy[1], tet_copy[2] = tet_copy[2], tet_copy[1]
+
+            new_vertices = SVector{4,SVector{3,Float64}}(
+                mesh.X[tet_copy[1]],
+                mesh.X[tet_copy[2]],
+                mesh.X[tet_copy[3]],
+                mesh.X[tet_copy[4]],
+            )
+            new_a = new_vertices[2] - new_vertices[1]
+            new_b = new_vertices[3] - new_vertices[1]
+            new_c = new_vertices[4] - new_vertices[1]
+            new_det = dot(new_a, cross(new_b, new_c))
+
+            if new_det > volume_tolerance
+                push!(valid_elements, tet_copy)
+                fixed_elements += 1
+                continue
+            end
+
+            # Strategy 3: Swap vertices 2 and 3
+            tet_copy = copy(tet)
+            tet_copy[2], tet_copy[3] = tet_copy[3], tet_copy[2]
+
+            new_vertices = SVector{4,SVector{3,Float64}}(
+                mesh.X[tet_copy[1]],
+                mesh.X[tet_copy[2]],
+                mesh.X[tet_copy[3]],
+                mesh.X[tet_copy[4]],
+            )
+            new_a = new_vertices[2] - new_vertices[1]
+            new_b = new_vertices[3] - new_vertices[1]
+            new_c = new_vertices[4] - new_vertices[1]
+            new_det = dot(new_a, cross(new_b, new_c))
+
+            if new_det > volume_tolerance
+                push!(valid_elements, tet_copy)
+                fixed_elements += 1
+                continue
+            end
+
+            # All fix attempts failed
+            failed_fixes += 1
+        else
+            # Element already has positive determinant
+            push!(valid_elements, tet)
         end
     end
 
-    if degenerate_count > 0
-        @warn "Found $degenerate_count elements with duplicate nodes"
-    end
+    # Update connectivity
+    mesh.IEN = valid_elements
+    create_INE!(mesh)                  # Creates inverse connectivity (mesh.INE)
 
-    if failed_count > 0
-        @warn "Failed to fix orientation of $failed_count elements"
+    # Report statistics before connectivity update
+    println("  Fixed orientation of $fixed_elements inverted elements")
+    if failed_fixes != 0
+        println(
+            "  Failed to fix orientation of $(RED)$(BOLD)$(failed_fixes)$(RESET) elements",
+        )
     end
+    println("  Removing $zero_volume_elements elements with near-zero volume")
 
-    @info "Fixed orientation of $fixed_count tetrahedra"
-    return fixed_count
+    return mesh
 end

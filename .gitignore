@@ -1,6 +1,6 @@
-
 *.jld2
 *.vtk
+*.vti
 *.vtu
 *.edge
 *.ele
@@ -9,7 +9,10 @@
 *.smesh
 *.stl
 *.png
+*.sh
 
 !doc/*.png
 !doc/*.img
+!data/**/*.jld2
+!data/**/*.vti
 .DS_Store

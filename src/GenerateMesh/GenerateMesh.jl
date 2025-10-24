@@ -7,13 +7,9 @@ export generate_mesh!,
     export_mesh_vtu,
     export_mesh_vtu_quality,
     warp_node_to_isocontour!,
-    longest_edge,
-    remove_nodes_outside_isocontour!,
     remove_inverted_elements!,
     cleanup_unused_nodes!,
-    create_INE!,
-    remove_exterior_tetrahedra!,
-    fix_tetrahedra_orientation!
+    create_INE!
 
 
 using Statistics
@@ -27,7 +23,7 @@ using Implicit2TetMesh.Fundamentals
 include("Schemes/A15Scheme.jl")
 include("Schemes/SchlafliScheme.jl")
 include("TetGenerator.jl")
-include("AdjustNodesToIso.jl")
+include("NewCases-Experimental.jl")
 include("Stencils.jl")
 include("ExportMesh.jl")
 

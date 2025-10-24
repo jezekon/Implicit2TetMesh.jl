@@ -3,7 +3,6 @@ using JLD2
 using Implicit2TetMesh
 using Implicit2TetMesh.Fundamentals
 using Implicit2TetMesh.GenerateMesh
-using Implicit2TetMesh.Optimization
 using Implicit2TetMesh.Modification
 using Implicit2TetMesh.Utils
 
@@ -11,17 +10,17 @@ include("GenerateMeshTests/validate_sdf_values.jl")
 
 @testset "Implicit2TetMesh.jl" begin
 
-    RUN_beam = true
+    RUN_beam = false
     RUN_main = false
     RUN_main_param = false
-    RUN_chapadlo = false
+    RUN_gripper = true
 
     if RUN_beam
 
         taskName = "Test-beam"
 
-        @load "../data/beam/Z_beam_HEX8_FineGrid_B-1.0_smooth-1_Interpolation.jld2" fine_grid
-        @load "../data/beam/Z_beam_HEX8_FineSDF_B-1.0_smooth-1_Interpolation.jld2" fine_sdf
+        @load "../data/beam/Z_beam_HEX8_FineGrid_B-1.0_smooth-1.jld2" fine_grid
+        @load "../data/beam/Z_beam_HEX8_FineSDF_B-1.0_smooth-1.jld2" fine_sdf
 
         scheme = "A15"
         # scheme = "Schlafli"
@@ -45,34 +44,38 @@ include("GenerateMeshTests/validate_sdf_values.jl")
         # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-step_warp$(scheme).vtu")
         stats = validate_node_sdf_values(mesh, 0.005)
 
-        slice_ambiguous_tetrahedra!(mesh) # Remove elements outside the body
+        experimental_nzzz = true
+        # experimental_nzzz = false
+        slice_ambiguous_tetrahedra!(mesh, scheme, experimental_nzzz) # Remove elements outside the body
         export_mesh_vtu(mesh, "$(taskName)_3-Sliced-$(scheme).vtu")
 
         stats = validate_node_sdf_values(mesh, 0.005)
 
-        # update_connectivity!(mesh)
-        #
-        # TetMesh_volumes(mesh)
-        #
-        # remove_inverted_elements!(mesh)
-        # update_connectivity!(mesh)
-        # # optimize_mesh!(mesh, scheme)
-        #
-        # # Korekce objemu
-        # success = correct_mesh_volume!(
-        #     mesh,
-        #     fine_sdf,
-        #     fine_grid,
-        #     scheme,
-        #     plane_definitions = plane_definitions,
-        # )
-        # remove_inverted_elements!(mesh)
-        #
-        # # Vyhodnocení přesnosti
-        # # assess_volume_accuracy(mesh, fine_sdf, fine_grid)
-        #
-        # export_mesh_vtu(mesh, "$(taskName)_4-Corrected_Volume-$(scheme).vtu")
-        # # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-volume_modif_$(scheme).vtu")
+        update_connectivity!(mesh)
+
+        TetMesh_volumes(mesh)
+
+        remove_inverted_elements!(mesh)
+        update_connectivity!(mesh)
+
+        remove_isolated_components!(mesh, keep_largest = true)
+        update_connectivity!(mesh)
+
+        # Korekce objemu
+        success = correct_mesh_volume!(
+            mesh,
+            fine_sdf,
+            fine_grid,
+            scheme,
+            plane_definitions = plane_definitions,
+        )
+        remove_inverted_elements!(mesh)
+
+        # Vyhodnocení přesnosti
+        # assess_volume_accuracy(mesh, fine_sdf, fine_grid)
+
+        export_mesh_vtu(mesh, "$(taskName)_4-Corrected_Volume-$(scheme).vtu")
+        # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-volume_modif_$(scheme).vtu")
     end
 
     #     # Apply cutting planes only if they are defined
@@ -91,9 +94,9 @@ include("GenerateMeshTests/validate_sdf_values.jl")
 
     if RUN_main
         mesh = generate_tetrahedral_mesh(
-            "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-1_Interpolation.jld2",
-            "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-1_Interpolation.jld2",
-            "cantilever_beam_interp",
+            "../data/beam/Z_beam_HEX8_FineGrid_B-1.0_smooth-1.jld2",
+            "../data/beam/Z_beam_HEX8_FineSDF_B-1.0_smooth-1.jld2",
+            "cantilever_beam",
         )
     end
 
@@ -106,16 +109,14 @@ include("GenerateMeshTests/validate_sdf_values.jl")
 
         options=MeshGenerationOptions(
             scheme = "A15",
-            optimize = true,
-            split_elements = false,
             quality_export = true,
-            warp_param = 0.0,
+            warp_param = 0.3,
             plane_definitions = plane_definitions,
         )
 
         mesh = generate_tetrahedral_mesh(
-            "../data/Z_cantilever_beam_vfrac_04_FineGrid_B-1.0_smooth-1_Interpolation.jld2",
-            "../data/Z_cantilever_beam_vfrac_04_FineSDF_B-1.0_smooth-1_Interpolation.jld2",
+            "../data/beam/Z_beam_HEX8_FineGrid_B-1.0_smooth-1.jld2",
+            "../data/beam/Z_beam_HEX8_FineSDF_B-1.0_smooth-1.jld2",
             "cantilever_beam_interp_cut",
             options = options,
         )
@@ -123,7 +124,7 @@ include("GenerateMeshTests/validate_sdf_values.jl")
         # assess_mesh_quality(mesh, "mesh_quality")
     end
 
-    if RUN_chapadlo
+    if RUN_gripper
         function define_boundary_planes()
             planes = PlaneDefinition[]
 
@@ -170,8 +171,8 @@ include("GenerateMeshTests/validate_sdf_values.jl")
 
         # Define input data file paths
         # These files contain the fine grid coordinates and SDF values for the gripper geometry
-        grid_file = "../data/chapadlo/Z_chapadlo_FineGrid_B-2.0085_smooth-1_Interpolation.jld2"
-        sdf_file = "../data/chapadlo/Z_chapadlo_FineSDF_B-2.0085_smooth-1_Interpolation.jld2"
+        grid_file = "../data/gripper/Z_robot_gripper_HEX8_FineGrid_B-2.0085_smooth-1.jld2"
+        sdf_file = "../data/gripper/Z_robot_gripper_HEX8_FineSDF_B-2.0085_smooth-1.jld2"
 
         # Define output file prefix (without extension - .vtu will be added automatically)
         output_prefix = "tet_chapadlo_B-2.0"
@@ -192,8 +193,6 @@ include("GenerateMeshTests/validate_sdf_values.jl")
             warp_param = 0.3,            # Small warping parameter for precise boundary alignment
             plane_definitions = plane_definitions,  # Apply boundary plane constraints
             quality_export = true,       # Export detailed quality metrics for analysis
-            optimize = false,             # Enable mesh optimization for better element quality
-            split_elements = true,       # Use element splitting for accurate isosurface representation
             correct_volume = true,        # Apply volume correction to match reference geometry
         )
 
@@ -202,8 +201,6 @@ include("GenerateMeshTests/validate_sdf_values.jl")
         println("  Discretization scheme: $(options.scheme)")
         println("  Warp parameter: $(options.warp_param)")
         println("  Quality export: $(options.quality_export)")
-        println("  Mesh optimization: $(options.optimize)")
-        println("  Element splitting: $(options.split_elements)")
         println("  Volume correction: $(options.correct_volume)")
         println()
 

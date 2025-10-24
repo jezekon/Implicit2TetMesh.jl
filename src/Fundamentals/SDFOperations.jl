@@ -73,15 +73,15 @@ end
 # ----------------------------
 # Helper function: Approximation of the SDF gradient at point p using central differences
 # ----------------------------
-function approximate_gradient(mesh::BlockMesh, p::SVector{3,Float64}; h::Float64 = 1e-3)
-    dx = SVector{3,Float64}(h, 0.0, 0.0)
-    dy = SVector{3,Float64}(0.0, h, 0.0)
-    dz = SVector{3,Float64}(0.0, 0.0, h)
-    df_dx = (eval_sdf(mesh, p + dx) - eval_sdf(mesh, p - dx)) / (2 * h)
-    df_dy = (eval_sdf(mesh, p + dy) - eval_sdf(mesh, p - dy)) / (2 * h)
-    df_dz = (eval_sdf(mesh, p + dz) - eval_sdf(mesh, p - dz)) / (2 * h)
-    return SVector{3,Float64}(df_dx, df_dy, df_dz)
-end
+# function approximate_gradient(mesh::BlockMesh, p::SVector{3,Float64}; h::Float64 = 1e-3)
+#     dx = SVector{3,Float64}(h, 0.0, 0.0)
+#     dy = SVector{3,Float64}(0.0, h, 0.0)
+#     dz = SVector{3,Float64}(0.0, 0.0, h)
+#     df_dx = (eval_sdf(mesh, p + dx) - eval_sdf(mesh, p - dx)) / (2 * h)
+#     df_dy = (eval_sdf(mesh, p + dy) - eval_sdf(mesh, p - dy)) / (2 * h)
+#     df_dz = (eval_sdf(mesh, p + dz) - eval_sdf(mesh, p - dz)) / (2 * h)
+#     return SVector{3,Float64}(df_dx, df_dy, df_dz)
+# end
 
 
 # Estimate the gradient of the SDF around the node

@@ -266,25 +266,6 @@ function generate_mesh!(mesh::BlockMesh, scheme::String)
 end
 
 
-# Function to calculate the length of the longest edge between nodes in all tetrahedra
-# TODO: Just take the initial discretization and take only one element (for speedup)
-function longest_edge(mesh::BlockMesh)
-    # Pre-allocate maximum length with type stability
-    max_length = zero(eltype(mesh.X[1]))
-
-    # Vectorize operations by using broadcast
-    for tet in mesh.IEN
-        # Use array views for better memory efficiency
-        nodes = @view mesh.X[tet]
-        # Calculate all edge lengths at once using comprehension
-        lengths = [norm(nodes[i] - nodes[j]) for i = 1:3 for j = (i+1):4]
-        # Use built-in maximum function
-        max_length = max(max_length, maximum(lengths))
-    end
-    return max_length
-end
-
-
 # Update warp_node_to_isocontour! to handle positions directly
 function warp_node_to_isocontour!(
     mesh::BlockMesh,
@@ -335,7 +316,6 @@ end
 function warp!(mesh::BlockMesh, scheme::String, max_iter::Int = 160)
     # Calculate the longest edge and then the threshold for displacement
     @info "Warping nodes to isocontour..."
-    max_edge = longest_edge(mesh)
     if scheme == "A15"
         threshold_sdf = 0.15 * mesh.grid_step
     elseif scheme == "Schlafli"
@@ -344,9 +324,6 @@ function warp!(mesh::BlockMesh, scheme::String, max_iter::Int = 160)
         @error "Unknown scheme"
     end
 
-    println(
-        "  max edge length = $(round(max_edge, sigdigits=4)) , threshold sdf for warp = $threshold_sdf",
-    )
     # First pass: nodes with positive SDF value (inside)
     for i = 1:length(mesh.X)
         sdf = mesh.node_sdf[i]
