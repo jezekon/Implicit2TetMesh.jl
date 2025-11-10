@@ -18,6 +18,8 @@ Implicit2TetMesh is an experimental Julia package for generating high-quality te
 - **Mesh Operations**: Slicing, isolated component removal, inverted element fixing, and VTU export with mesh quality metrics
 
 ## Installation
+
+**Requirements:** Julia LTS (1.10.10)
 ```julia
 # From Julia REPL, press ] to enter package mode
 pkg> add https://github.com/jezekon/Implicit2TetMesh.jl
