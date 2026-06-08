@@ -18,9 +18,9 @@ Calculates volume of geometry defined by SDF iso-surface.
 - Volume of the geometry
 
 # Description
-For each grid element:
-1. Skip if outside iso-surface (all SDF values < threshold)
-2. Add full volume if inside iso-surface (all SDF values ≥ threshold)
+Assumes the phi < 0 = inside convention. For each grid element:
+1. Skip if outside iso-surface (all SDF values > threshold)
+2. Add full volume if inside iso-surface (all SDF values ≤ threshold)
 3. Use quadrature for partial elements intersecting the iso-surface
 """
 function calculate_volume_from_sdf(
@@ -69,12 +69,12 @@ function calculate_volume_from_sdf(
                 max_value = max(c000, c100, c010, c110, c001, c101, c011, c111)
 
                 # Skip element if completely outside the iso-surface
-                if max_value < iso_threshold
+                if min_value > iso_threshold
                     continue
                 end
 
                 # If element is completely inside the iso-surface, add its full volume
-                if min_value >= iso_threshold
+                if max_value <= iso_threshold
                     atomic_add!(total_volume, element_volume)
                     continue
                 end
@@ -107,7 +107,7 @@ function calculate_volume_from_sdf(
                             point_sdf = c0 * (1.0f0 - zeta) + c1 * zeta
 
                             # Add contribution only if point is inside (or on) the iso-surface
-                            if point_sdf >= iso_threshold
+                            if point_sdf <= iso_threshold
                                 weight = w[iq] * w[jq] * w[kq]
                                 element_volume_partial += weight * jacobian_det
                             end

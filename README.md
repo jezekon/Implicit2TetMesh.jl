@@ -38,6 +38,8 @@ generate_tetrahedral_mesh(grid_file, sdf_file, output_prefix; options=MeshGenera
 - `sdf_file::String`: Path to the JLD2 file containing the SDF values
 - `output_prefix::String`: Prefix for output files (default: "output")
 - `options::MeshGenerationOptions`: Configuration options (optional)
+#### SDF Convention:
+The package uses the standard convention `phi < 0 = inside`, `phi > 0 = outside`, `phi = 0 = on the surface`, matching the isosurface-stuffing reference implementations. Input files that store the opposite sign (positive = inside) are negated automatically when the `BlockMesh` is constructed; the data files on disk are never modified.
 #### Return Value:
 - `mesh::BlockMesh`: The generated tetrahedral mesh
 - **Output files**: `.vtu` mesh visualization files for Paraview

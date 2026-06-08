@@ -14,11 +14,12 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
     # First check the SDF values of the current cell
     current_sdf_values = get_cell_sdf_values(mesh, i, j, k)
 
-    # If any value in the current cell is positive or close to zero, we definitely process the cell
-    if any(x -> x >= -tol, current_sdf_values)
+    # If any value in the current cell is negative or close to zero (inside or on the
+    # surface), we definitely process the cell.
+    if any(x -> x <= tol, current_sdf_values)
         # Continue with regular processing
     else
-        # All values in the current cell are negative - check neighboring cells
+        # All values in the current cell are positive (fully outside) - check neighboring cells
 
         # Define offsets for neighboring cells (direct neighbors in all directions)
         neighbor_offsets = [
@@ -30,8 +31,9 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
             (0, 0, -1),    # neighbors in z direction
         ] #TODO: select only relevant one
 
-        # Initialize a flag indicating that all neighboring cells have negative SDF values
-        all_neighbors_negative = true
+        # Initialize a flag indicating that all neighboring cells are fully outside
+        # (all SDF values positive under the phi < 0 = inside convention).
+        all_neighbors_outside = true
 
         # Check SDF values of neighboring cells
         for (di, dj, dk) in neighbor_offsets
@@ -43,18 +45,18 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
                 # Get SDF values for neighboring cell
                 neighbor_sdf = get_cell_sdf_values(mesh, ni, nj, nk)
 
-                # If any value in the neighboring cell has a positive or zero value,
-                # set the flag and end the check
-                if any(x -> x >= -tol, neighbor_sdf)
-                    all_neighbors_negative = false
+                # If any value in the neighboring cell is negative or zero (inside or on
+                # the surface), clear the flag and end the check
+                if any(x -> x <= tol, neighbor_sdf)
+                    all_neighbors_outside = false
                     break
                 end
             end
         end
 
-        # If all values in the current cell and all neighboring cells are negative,
+        # If the current cell and all neighboring cells are fully outside,
         # we can safely skip the cell
-        if all_neighbors_negative
+        if all_neighbors_outside
             return
         end
     end
@@ -106,7 +108,7 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
         end
 
         # Include tetrahedron only if at least one vertex is inside or on the boundary
-        if any(x -> x >= 0, tet_sdf)
+        if any(x -> x <= 0, tet_sdf)
             push!(mesh.IEN, global_tet)
         end
     end
@@ -119,7 +121,7 @@ function process_cell_Schlafli!(mesh::BlockMesh, i::Int, j::Int, k::Int)
     tol = mesh.grid_tol
     # Get SDF values at the 8 corners of the cell
     sdf_values = get_cell_sdf_values(mesh, i, j, k)
-    if !any(x -> x >= -tol, sdf_values)
+    if !any(x -> x <= tol, sdf_values)
         return
     end
 
@@ -154,7 +156,7 @@ function process_cell_Schlafli!(mesh::BlockMesh, i::Int, j::Int, k::Int)
     @inbounds for tet in schlafli_tet_connectivity
         global_tet = [local_mapping[li] for li in tet]
         tet_sdf = [mesh.node_sdf[idx] for idx in global_tet]
-        if any(x -> x >= 0, tet_sdf)
+        if any(x -> x <= 0, tet_sdf)
             push!(mesh.IEN, global_tet)
         end
     end
@@ -309,9 +311,10 @@ end
 
 # Main function for node warping - ordered warping
 #
-# First, nodes with positive SDF value (inside the isosurface) are adjusted, 
-# then nodes with negative values.
-# Nodes are moved toward the zero level of SDF (isosurface) and the displacement threshold 
+# First, nodes with negative SDF value (inside the isosurface) are adjusted,
+# then nodes with positive values (outside). Processing inside nodes first preserves
+# the original warping order under the phi < 0 = inside convention.
+# Nodes are moved toward the zero level of SDF (isosurface) and the displacement threshold
 # is calculated as threshold_sdf = 0.5 * (length of the longest tetrahedral edge).
 function warp!(mesh::BlockMesh, scheme::String, max_iter::Int = 160)
     # Calculate the longest edge and then the threshold for displacement
@@ -324,17 +327,17 @@ function warp!(mesh::BlockMesh, scheme::String, max_iter::Int = 160)
         @error "Unknown scheme"
     end
 
-    # First pass: nodes with positive SDF value (inside)
-    for i = 1:length(mesh.X)
-        sdf = mesh.node_sdf[i]
-        if sdf > 0 && abs(sdf) < threshold_sdf
-            warp_node_to_isocontour!(mesh, i, threshold_sdf, max_iter)
-        end
-    end
-    # Second pass: nodes with negative SDF value (outside)
+    # First pass: nodes with negative SDF value (inside)
     for i = 1:length(mesh.X)
         sdf = mesh.node_sdf[i]
         if sdf < 0 && abs(sdf) < threshold_sdf
+            warp_node_to_isocontour!(mesh, i, threshold_sdf, max_iter)
+        end
+    end
+    # Second pass: nodes with positive SDF value (outside)
+    for i = 1:length(mesh.X)
+        sdf = mesh.node_sdf[i]
+        if sdf > 0 && abs(sdf) < threshold_sdf
             warp_node_to_isocontour!(mesh, i, threshold_sdf, max_iter)
         end
     end

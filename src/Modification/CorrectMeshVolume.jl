@@ -120,8 +120,10 @@ function correct_mesh_volume!(
     plane_definitions::Union{Vector{PlaneDefinition},Nothing} = nothing,
 )
 
-    # Step 1: Calculate reference volume from SDF data
-    reference_volume = Float64(calculate_volume_from_sdf(fine_sdf, fine_grid))
+    # Step 1: Calculate reference volume from SDF data.
+    # calculate_volume_from_sdf assumes phi < 0 = inside, so negate the raw fine_sdf
+    # (the data files store positive = inside) to match the in-memory convention.
+    reference_volume = Float64(calculate_volume_from_sdf(-fine_sdf, fine_grid))
     @info "Correcting mesh volume..."
     println("  Reference volume from SDF data: $reference_volume")
 
@@ -213,17 +215,19 @@ function correct_mesh_volume!(
     println("  Initial mesh volume: $current_volume")
     println("  Volume deficit: $volume_deficit")
 
-    # Determine initial SDF target based on volume deficit
-    initial_sdf = volume_deficit > 0 ? -0.05 : 0.05
-    correction_direction = volume_deficit > 0 ? "expand inward" : "contract outward"
+    # Determine initial SDF target based on volume deficit.
+    # Convention: phi < 0 = inside, so a positive target SDF moves the surface outward
+    # (expanding the volume) and a negative target moves it inward (contracting).
+    initial_sdf = volume_deficit > 0 ? 0.05 : -0.05
+    correction_direction = volume_deficit > 0 ? "expand outward" : "contract inward"
 
     # Step 5: Set up bisection interval
     if volume_deficit > 0
-        # Need to expand volume: move inward (negative SDF direction)
-        low_sdf, high_sdf = initial_sdf, 0.0
-    else
-        # Need to contract volume: move outward (positive SDF direction)  
+        # Need to expand volume: move outward (positive SDF direction)
         low_sdf, high_sdf = 0.0, initial_sdf
+    else
+        # Need to contract volume: move inward (negative SDF direction)
+        low_sdf, high_sdf = initial_sdf, 0.0
     end
 
     # Backup original node positions and SDF values for restoration (only for movable nodes)
@@ -275,11 +279,13 @@ function correct_mesh_volume!(
             return true
         end
 
-        # Update bisection interval based on volume comparison
+        # Update bisection interval based on volume comparison.
+        # Under phi < 0 = inside, volume increases with the target SDF level, so to
+        # reduce an over-large volume we lower the target (and vice versa).
         if new_volume > reference_volume
-            low_sdf = mid_sdf  # Move toward more negative SDF (more inward)
+            high_sdf = mid_sdf  # Too much volume: move toward lower (more inward) target
         else
-            high_sdf = mid_sdf # Move toward less negative SDF (less inward)
+            low_sdf = mid_sdf   # Too little volume: move toward higher (more outward) target
         end
 
         # Check if interval became too small (convergence unlikely)

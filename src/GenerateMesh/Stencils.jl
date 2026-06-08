@@ -211,8 +211,8 @@ end
 """
     warp_node_to_surface(mesh::BlockMesh, position::SVector{3,Float64}, current_sdf::Float64)
 
-Warp a node with negative SDF to the zero isosurface using gradient descent.
-Returns the new position on the surface.
+Warp a node with positive SDF (outside the surface) to the zero isosurface using
+gradient descent. Returns the new position on the surface.
 """
 function warp_node_to_surface(
     mesh::BlockMesh,
@@ -294,14 +294,14 @@ end
 """
     process_nzzz_case!(mesh, s_idx, r_idx, q_idx, p_idx, sdf_s, cut_map, params, tol)
 
-Process NZZZ case: one node outside (negative SDF), three on surface (zero SDF).
+Process NZZZ case: one node outside (positive SDF), three on surface (zero SDF).
 
-Warps single negative node to surface with relaxed safety checks (safer case).
+Warps single outside node to surface with relaxed safety checks (safer case).
 
 # Arguments
 - `mesh::BlockMesh`: The tetrahedral mesh
 - `s_idx, r_idx, q_idx, p_idx::Int`: Node indices (sorted by SDF)
-- `sdf_s::Float64`: SDF value at node s (negative)
+- `sdf_s::Float64`: SDF value at node s (positive = outside)
 - `cut_map::Dict`: Cache for avoiding duplicate node creation
 - `params::CaseParams`: Safety parameters (relaxed for this case)
 - `tol::Float64`: Tolerance for surface detection
@@ -335,7 +335,7 @@ function process_nzzz_case!(
             dot(cross(v_orig[2] - v_orig[1], v_orig[3] - v_orig[1]), v_orig[4] - v_orig[1]),
         ) / 6.0
 
-    # Warp single negative node to the isosurface
+    # Warp single outside node to the isosurface
     s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
 
     # Safety check 2: Node displacement limit (relaxed for single node)
@@ -356,9 +356,9 @@ function process_nzzz_case!(
         return Vector{Vector{Int64}}()
     end
 
-    # Safety check 4: New centroid must be inside geometry
+    # Safety check 4: New centroid must be inside geometry (sdf < 0 under phi < 0 = inside)
     centroid = (mesh.X[s_new] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-    if eval_sdf(mesh, centroid) <= tol
+    if eval_sdf(mesh, centroid) >= -tol
         return Vector{Vector{Int64}}()
     end
 
@@ -383,7 +383,7 @@ end
     apply_stencil_trim_spikes!(mesh::BlockMesh, tet::Vector{Int64}, cut_map::Dict{Tuple{Int, Int}, Int})
 
 Apply trimming algorithm to a tetrahedron that crosses the isosurface.
-Returns new tetrahedra that accurately represent the interior region (SDF ≥ 0).
+Returns new tetrahedra that accurately represent the interior region (SDF ≤ 0).
 Uses case-by-case analysis based on SDF sign patterns for robust slicing.
 """
 function apply_stencil_trim_spikes!(
@@ -400,25 +400,28 @@ function apply_stencil_trim_spikes!(
     tol = mesh.grid_tol
 
     # --- Special cases handling ---
-    # Case 1: All nodes outside (SDF < -tol) - discard tetrahedron (NNNN case)
-    if all(s -> s < -tol, node_sdf)
+    # Case 1: All nodes outside (SDF > tol) - discard tetrahedron (all-outside case)
+    if all(s -> s > tol, node_sdf)
         return Vector{Vector{Int64}}()
     end
 
-    # Case 2: All nodes inside or on surface (SDF ≥ tol) - keep original (PPPP case)
-    if all(s -> s > tol, node_sdf)
+    # Case 2: All nodes inside (SDF < -tol) - keep original (all-inside case)
+    if all(s -> s < -tol, node_sdf)
         return [tet]
     end
 
     # --- General case: Tetrahedron crossing the isosurface ---
-    # Sort vertices by SDF value (smallest first)
+    # Sort vertices by SDF value (largest first, i.e. most-outside vertex first)
     vert_data = [(node_sdf[i], node_indices[i]) for i = 1:4]
     p = [1, 2, 3, 4]
     flipped = false
 
-    # Comparison function for consistent vertex ordering
+    # Comparison function for consistent vertex ordering.
+    # Descending by SDF, with the original node index as a stable tie-breaker. Under the
+    # negated convention this is the exact mirror of the previous ascending sort
+    # (-a > -b  <=>  a < b), so the resulting permutation and `flipped` are unchanged.
     less_than(idx1, idx2) =
-        (vert_data[idx1][1] < vert_data[idx2][1]) || (
+        (vert_data[idx1][1] > vert_data[idx2][1]) || (
             vert_data[idx1][1] == vert_data[idx2][1] &&
             vert_data[idx1][2] < vert_data[idx2][2]
         )
@@ -445,12 +448,12 @@ function apply_stencil_trim_spikes!(
         flipped = !flipped
     end
 
-    # Sorted vertices (s has lowest SDF, p has highest)
+    # Sorted vertices (s has highest SDF = most outside, p has lowest = most inside)
     s_idx, r_idx, q_idx, p_idx = [vert_data[pi][2] for pi in p]
     sdf_s, sdf_r, sdf_q, sdf_p = [vert_data[pi][1] for pi in p]
 
-    # Check if SDF values are properly sorted
-    if !(sdf_s <= sdf_r <= sdf_q <= sdf_p)
+    # Check if SDF values are properly sorted (descending)
+    if !(sdf_s >= sdf_r >= sdf_q >= sdf_p)
         @warn "SDF values not sorted: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p"
     end
 
@@ -458,7 +461,7 @@ function apply_stencil_trim_spikes!(
     if all(s -> abs(s) <= tol, node_sdf)
         centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
         # println("ZZZZ case, nodes sdf: $(node_sdf)")
-        if eval_sdf(mesh, centroid) > 0.0
+        if eval_sdf(mesh, centroid) < 0.0
             # This tetrahedron represents the surface, keep it
             return [tet]
         else
@@ -467,21 +470,26 @@ function apply_stencil_trim_spikes!(
         end
     end
 
-    # Classify vertices by SDF sign (N=negative, P=positive, Z=zero)
-    is_s_neg = sdf_s < -tol
-    is_r_neg = sdf_r < -tol
-    is_q_neg = sdf_q < -tol
-    is_p_neg = sdf_p < -tol
+    # Classify each vertex by geometric role under the phi < 0 = inside convention:
+    #   outside : sdf >  tol   (positive)
+    #   inside  : sdf < -tol   (negative)
+    #   surface : |sdf| <= tol (zero)
+    # The historical case labels below (NNNP, NPPP, ...) name the geometric pattern;
+    # Etapa 3 aligns them 1:1 with quartet's notation.
+    is_s_outside = sdf_s > tol
+    is_r_outside = sdf_r > tol
+    is_q_outside = sdf_q > tol
+    is_p_outside = sdf_p > tol
 
-    # is_s_pos = sdf_s > tol
-    is_p_pos = sdf_p > tol
-    is_q_pos = sdf_q > tol
-    is_r_pos = sdf_r > tol
+    # is_s_inside = sdf_s < -tol
+    is_p_inside = sdf_p < -tol
+    is_q_inside = sdf_q < -tol
+    is_r_inside = sdf_r < -tol
 
-    is_s_zero = abs(sdf_s) <= tol
-    is_r_zero = abs(sdf_r) <= tol
-    is_q_zero = abs(sdf_q) <= tol
-    is_p_zero = abs(sdf_p) <= tol
+    is_s_surface = abs(sdf_s) <= tol
+    is_r_surface = abs(sdf_r) <= tol
+    is_q_surface = abs(sdf_q) <= tol
+    is_p_surface = abs(sdf_p) <= tol
 
     new_tets = Vector{Vector{Int64}}()
 
@@ -503,16 +511,16 @@ function apply_stencil_trim_spikes!(
     end
 
     # --- Case analysis based on SDF sign patterns --- (S ≤ R ≤ Q ≤ P)
-    if is_s_neg && is_p_zero # Cases: NNNZ, NNZZ, NZZZ
-        if is_s_neg && is_r_neg && is_q_neg && is_p_zero
+    if is_s_outside && is_p_surface # Cases: NNNZ, NNZZ, NZZZ
+        if is_s_outside && is_r_outside && is_q_outside && is_p_surface
             # NNNZ: Three nodes outside, one on surface
             # Too risky - warping 3 nodes simultaneously could cause mesh intersections
             return Vector{Vector{Int64}}()
 
-        elseif is_s_neg && is_r_neg && is_q_zero && is_p_zero
+        elseif is_s_outside && is_r_outside && is_q_surface && is_p_surface
             return Vector{Vector{Int64}}()
 
-        elseif is_s_neg && is_r_zero && is_q_zero && is_p_zero
+        elseif is_s_outside && is_r_surface && is_q_surface && is_p_surface
             # NZZZ: One node outside, three on surface - use relaxed parameters
             if experimental_nzzz
 
@@ -537,12 +545,12 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case (Z,!N,!N,P): Surface node with all others on surface or inside
-    elseif is_s_zero && !is_r_neg && !is_q_neg && is_p_pos # ZZZP, ZZPP, ZPPP
+    elseif is_s_surface && !is_r_outside && !is_q_outside && is_p_inside # ZZZP, ZZPP, ZPPP
         # println("ZZZP, ZZPP, ZPPP")
         return [tet]
 
         # Case NNNP: Three nodes outside, one inside
-    elseif is_s_neg && is_r_neg && is_q_neg && is_p_pos
+    elseif is_s_outside && is_r_outside && is_q_outside && is_p_inside
         # Cut three edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -556,8 +564,8 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NPPP: One node outside, three inside
-    elseif is_s_neg && is_r_pos
-        if !is_r_neg && !is_q_neg # Confirm r, q, p are interior nodes
+    elseif is_s_outside && is_r_inside
+        if !is_r_outside && !is_q_outside # Confirm r, q, p are interior nodes
             # Cut edges from outside node to each interior node
             sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map)
             sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
@@ -579,7 +587,7 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NNPP: Two nodes outside, two inside
-    elseif is_r_neg && is_q_pos
+    elseif is_r_outside && is_q_inside
         # Cut all four edges crossing the isosurface
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -598,7 +606,7 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NZPP: One outside, one on surface, two inside
-    elseif is_s_neg && is_r_zero && is_q_pos
+    elseif is_s_outside && is_r_surface && is_q_inside
         # Cut edges from outside node to interior nodes
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
@@ -613,7 +621,7 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NNZP: Two outside, one on surface, one inside
-    elseif is_r_neg && is_q_zero && is_p_pos
+    elseif is_r_outside && is_q_surface && is_p_inside
         # Cut edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -626,7 +634,7 @@ function apply_stencil_trim_spikes!(
         end
 
         # Case NZZP: One outside, two on surface, one inside
-    elseif is_s_neg && is_r_zero && is_q_zero && is_p_pos
+    elseif is_s_outside && is_r_surface && is_q_surface && is_p_inside
         # Cut edge from outside node to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
 

@@ -26,7 +26,13 @@ mutable struct BlockMesh
             grid[i] = SVector{3,Float64}(fine_grid[i]...)
         end
         step = maximum(abs.(grid[1, 1, 1] - grid[2, 2, 2]))
-        sdf = Float64.(fine_sdf)
+        # Convention: phi < 0 = INSIDE, phi > 0 = OUTSIDE, phi = 0 = ON the surface,
+        # matching the reference implementations (quartet / Labelle / isostuffer).
+        # The input data files use the opposite sign (positive = inside), so we negate
+        # the field once here. This is the single source for mesh.SDF; everything else
+        # reads it through get_cell_sdf_values / eval_sdf. The data files on disk are
+        # left untouched.
+        sdf = -Float64.(fine_sdf)
         nx, ny, nz = size(grid)
 
         mesh = new(nx, ny, nz)
