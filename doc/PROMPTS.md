@@ -63,6 +63,10 @@ DECISIONS ALREADY MADE:
   • Exact predicates via ExactPredicates.jl (Etapa 5).
   • Graded refinement is an OPTIONAL feature, OFF by default; the uniform mesher stays the default
     path (Etapas 6-7).
+  • The SDF source will become pluggable (Etapa 8): structured grid (trilinear, current path) AND
+    unstructured conforming HEX8 mesh (FE shape-function interpolation), with SIMP/level-set input
+    adapters. IMPORTANT for Etapas 2-5: never add new direct mesh.SDF[i,j,k] reads — access the
+    field ONLY via eval_sdf / get_cell_sdf_values / node_sdf, so the interface seam stays narrow.
 
 BEFORE STARTING (do this first, EVERY stage):
   1. Read the code files and the reference sections listed in the stage.
@@ -368,4 +372,77 @@ TASKS:
 VERIFY: the synthetic thin-feature case is now captured (it was lost in the uniform mesher);
 watertight, 0 inverted, dihedral within bounds; beam unchanged in uniform regions and with
 refinement OFF. CLOSEOUT (README: document the graded mode and the chosen tile).
+````
+
+---
+
+## Etapa 8 — SDF source abstraction: structured AND unstructured HEX8 input (Phase 3)
+
+````text
+ETAPA 8 — Pluggable SDF source: structured grid (trilinear) + unstructured HEX8 (FE shape functions)
+(depends on Etapas 1-5, especially Etapa 2; INDEPENDENT of Etapas 6-7 — may be done before them)
+
+GOAL: Support two kinds of input fields behind one narrow interface, so topology-optimization
+results can come either from a structured grid (current path; trilinear interpolation, as in the
+reference implementations) or from an unstructured conforming HEX8 FE mesh (isoparametric
+shape-function interpolation). The mesher itself (lattice fill, warp, stencils, connectivity)
+does NOT change — the generation lattice stays structured (that is a property of isosurface
+stuffing); only the SDF SOURCE becomes pluggable.
+
+WHY THIS WORKS (state these checks in the opening report):
+  • The entire pipeline consumes the field through ONE function (eval_sdf) plus the cached
+    node_sdf, so the seam is already narrow (verified: TetGenerator :86/:103, Stencils :78/:93,
+    CorrectMeshVolume :62; the only other access is get_cell_sdf_values for cell skip tests).
+  • HEX8 trilinear shape functions give a C0-continuous field on a CONFORMING mesh (the
+    restriction to a shared face depends only on the 4 face nodes), so the zero isosurface is
+    crack-free. Per-element interpolation without shared-face consistency would not be
+    (the diagonal-choice problem) — hence the conforming-mesh requirement below.
+  • After Etapa 2 the warp uses alpha = phi_i/(phi_i - phi_j) (scale-invariant) and no gradients,
+    so the field only needs the right zero set + monotonicity near it — it does not have to be a
+    true signed distance. SIMP density fields qualify.
+
+IMPLEMENT:
+  • New dir src/Fundamentals/SDFSources/ with:
+      - SDFSource.jl: abstract type SDFSource; interface eval_sdf(src, p), bbox(src).
+      - StructuredSDF.jl: wraps the current grid + values; MOVE the body of eval_sdf
+        (trilinear interpolation, SDFOperations.jl:24) here unchanged.
+      - UnstructuredSDF.jl: nodes, HEX8 connectivity, nodal phi. eval = point location
+        (uniform spatial hash over element bounding boxes) -> inverse isoparametric mapping
+        (3x3 Newton for (xi,eta,zeta), few iterations) -> trilinear shape functions.
+        REQUIRE a conforming mesh (no hanging nodes) and positive Jacobians; validate on load.
+      - Adapters.jl:
+          SIMP: element-constant densities -> nodal values (volume-weighted average of adjacent
+                elements), then phi = iso_level - rho with iso_level default 0.5, user-adjustable.
+          Level-set: nodal field used directly; parameter for the input sign convention so the
+                in-memory field is phi < 0 = inside (Etapa 1 convention).
+          Auto-detect: given nodes + HEX8 connectivity, recognize a tensor-product grid (unique
+                sorted x/y/z coordinates, complete lattice within tol) and build a StructuredSDF
+                (fast path); otherwise UnstructuredSDF. Allow an explicit override parameter.
+  • BlockMesh: add field sdf_source::SDFSource; keep ALL existing fields and the output contract
+    (X, IEN, INE, node_sdf, node_hash) unchanged. mesh.SDF stays as the lattice-corner cache:
+    for structured input it IS the input array (bit-identical behaviour); for unstructured input
+    it is sampled from the source once at lattice construction.
+  • Lattice decoupling: for structured input the lattice = the input grid (current behaviour,
+    results must be IDENTICAL). For unstructured input build the lattice from bbox(source) +
+    user-chosen dx + 2-cell padding (mirror quartet main.cpp's grid sizing).
+  • eval_sdf(mesh, p) becomes a thin delegation to eval_sdf(mesh.sdf_source, p);
+    get_cell_sdf_values keeps reading the lattice cache as today.
+  • Outside-domain rule for unstructured sources: lattice points outside the hex mesh get a
+    positive (outside) value (closest-element extrapolation or clamp). When the input is a
+    design-domain box (the SIMP case), only the padding ring is affected.
+  • Volume reference (CorrectMeshVolume/CalcVolumeFromSDF): dispatch per source — current code
+    for structured; Gauss quadrature over hex elements with FE interpolation for unstructured.
+  • Clear explicit loops + English comments (CODE STYLE); the inverse mapping and the spatial
+    hash deserve short explanatory docstrings.
+
+VERIFY:
+  1. Structured path: beam + gripper reproduce the Etapa-5 numbers EXACTLY (pure refactor there).
+  2. Round-trip test: re-express the beam field as an unstructured HEX8 mesh (nodes+connectivity
+     generated from the structured grid) and force it through the unstructured code path
+     (auto-detect overridden) — the output mesh must match the structured run within
+     floating-point tolerance. This validates point location + inverse mapping + shape functions.
+  3. A genuinely unstructured small test: a distorted/graded hex block with an analytic field
+     (e.g. sphere); check surface fidelity, watertightness, 0 inverted.
+CLOSEOUT (README: document the two input kinds, the adapters incl. iso_level, the conforming-mesh
+requirement, and that the generation lattice itself remains structured by design).
 ````
