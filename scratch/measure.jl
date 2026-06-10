@@ -41,7 +41,7 @@ end
 
 m = BlockMesh(fine_sdf, fine_grid)
 generate_mesh!(m, "A15"); warp!(m, "A15"); update_connectivity!(m)
-slice_ambiguous_tetrahedra!(m, "A15", false); update_connectivity!(m)
+slice_ambiguous_tetrahedra!(m, "A15"); update_connectivity!(m)
 remove_inverted_elements!(m); remove_isolated_components!(m, keep_largest = true); update_connectivity!(m)
 s = dih(m)
 println("$nm: tets=$(length(m.IEN)) min=$(round(s[1];digits=3)) max=$(round(s[2];digits=3)) <5=$(s[3]) <10=$(s[4]) >140=$(s[5]) inv=$(s[6])")

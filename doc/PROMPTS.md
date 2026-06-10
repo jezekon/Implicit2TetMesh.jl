@@ -127,6 +127,63 @@ Etapa 1 must reproduce the "current repo" numbers EXACTLY (output-preserving). E
 
 ---
 
+## 🧪 Optional cross-validation against the original quartet implementation
+
+Not a stage of its own — run it as an extra check at the end of **Etapa 2** (warp port) and
+again after **Etapa 4** (full trim pipeline). It is a MANUAL verification workflow, not CI:
+it needs a C++ build and a slow run. Referenced from the VERIFY steps of Etapas 2-4 and 8.
+
+````text
+WHY THIS WORKS: quartet's entry point make_tet_mesh(mesh, sdf, optimize, ...) (make_tet_mesh.h)
+takes the SDF grid directly (Array3f phi + origin + dx) — the same input our BlockMesh consumes.
+So we can bypass quartet's main.cpp (which computes the SDF from an .obj) and feed quartet
+EXACTLY the same SDF grid as our mesher, then compare two meshes built from identical input.
+
+SCOPE / LIMITS (be explicit about these in any report):
+  • Works ONLY for STRUCTURED-grid inputs (beam, gripper, synthetic SDFs). quartet cannot consume
+    an unstructured HEX8 field, so for Etapa 8's unstructured inputs there is NO quartet oracle —
+    the only check there is the quality histogram (see Etapa 8).
+  • Run quartet with optimize=false (we have no optimization pass) and without feature matching.
+  • Compare our mesh BEFORE correct_mesh_volume! (quartet has no volume correction).
+  • Do NOT expect vertex-by-vertex / connectivity identity: quartet sizes its grid and enumerates
+    A15 tiles its own way. The right altitude is aggregate metrics + boundary-surface distance.
+  • isostuffer is BCC + graded octree — a different lattice; it is NOT comparable to the A15
+    output. It stays reference material for Etapas 6-7 only.
+
+SETUP (one-time; keep everything under scratch/):
+  1. scratch/export_sdf.jl — dump the IN-MEMORY SDF (the negated field, phi<0=inside, as stored
+     by BlockMesh) plus origin and dx for beam/gripper into a simple binary file. Do NOT dump the
+     raw on-disk field — it still has the old positive=inside sign.
+  2. scratch/quartet_driver.cpp (~50 lines) — read the dump, build an SDF (sdf.h), call
+     make_tet_mesh(mesh, sdf, /*optimize=*/false), write the .tet output. Compile against
+     Literature/quartet-original/src using its existing Makefile or a one-line g++ command.
+  3. scratch/compare_quartet.jl — load both meshes and print side-by-side:
+       - the SAME dih() metrics as the regression harness (tet count, min/max dihedral,
+         <5°, <10°, >140°, inverted) for both meshes;
+       - total mesh volume of each vs the SDF volume;
+       - boundary-surface distance: mean + Hausdorff distance from our boundary vertices to
+         quartet's boundary triangles AND vice versa (both meshes approximate the same zero
+         isosurface; expect agreement within ~dx/10).
+
+WHAT TO CHECK, BY STAGE:
+  • After Etapa 2 (the strongest test — the warp is a 1:1 port): temporarily instrument quartet
+    (printf) to dump vertex positions after warp_vertices; on the same lattice our warp must
+    produce IDENTICAL displacements up to float tolerance.
+  • After Etapa 3: per-case trim counts (+++-/++--/+0--/...) should match quartet's counts on the
+    same input (instrument trim_spikes with counters).
+  • After Etapa 4: aggregate metrics close to quartet's, inverted = 0 in both, boundary surfaces
+    coincident within tolerance.
+  • Any large deviation = a porting bug; find it before moving to the next stage.
+
+FUTURE AUTOMATED TESTS: once a cross-validated run produces trusted reference numbers for
+beam/gripper (tet count, dihedral histogram, volume), freeze them as expected values in test/ so
+regressions are caught automatically WITHOUT the C++ build. For unstructured-input cases (Etapa 8)
+no quartet oracle exists — instead, once the first verified-good unstructured run is approved by
+the owner, freeze ITS histogram/quality metrics as the automated regression baseline.
+````
+
+---
+
 ## Etapa 1 — Adopt the standard sign convention: phi < 0 = inside
 
 ````text
@@ -197,6 +254,9 @@ IMPLEMENT (direct port; phi<0=inside):
 
 VERIFY: harness on beam AND gripper. Beam should land near the Etapa-0 prototype (≈92,675 tets,
 min ≈8.2°, <5° 0, <10° ≈23, >140° ≈273, isolated ≈4, 0 inverted). Report a before/after table.
+RECOMMENDED EXTRA: run the quartet cross-validation (see the "🧪 Optional cross-validation"
+section) — on the same lattice and SDF, the edge-warp displacements must match quartet's
+warp_vertices exactly (up to float tolerance). Structured-grid inputs only.
 CLOSEOUT (README: describe the new warping step).
 ````
 
@@ -235,6 +295,8 @@ TASKS:
 
 VERIFY: harness on beam + gripper; residual <10° / >140° counts should drop vs Etapa 2; the boundary
 must be watertight (check the extracted surface / getBoundary for cracks). Before/after table.
+OPTIONAL: cross-check the per-case trim counts against quartet on the same SDF (see the
+"🧪 Optional cross-validation" section).
 CLOSEOUT (README: remove Schläfli and experimental_nzzz from the documented options).
 ````
 
@@ -272,8 +334,12 @@ IMPLEMENT:
   • Clear loops + English comments (CODE STYLE).
 
 VERIFY: harness on beam + gripper. Target: isolated/bubble count -> 0 (beam was 4 after Etapa 2),
-no quality regression, watertight. Before/after table. CLOSEOUT (README: describe the boundary
-handling).
+no quality regression, watertight. Before/after table.
+RECOMMENDED EXTRA: run the full quartet cross-validation (see the "🧪 Optional cross-validation"
+section) — same SDF into quartet (optimize=false), compare aggregate metrics, volume and
+boundary-surface distance; compare our mesh BEFORE correct_mesh_volume!. If the numbers agree,
+freeze them as automated regression values in test/.
+CLOSEOUT (README: describe the boundary handling).
 ````
 
 ---
@@ -443,6 +509,11 @@ VERIFY:
      floating-point tolerance. This validates point location + inverse mapping + shape functions.
   3. A genuinely unstructured small test: a distorted/graded hex block with an analytic field
      (e.g. sphere); check surface fidelity, watertightness, 0 inverted.
+  NOTE on verification limits: quartet can only consume structured grids, so there is NO quartet
+  oracle for unstructured inputs (the cross-validation section applies to paths 1-2 only). For
+  unstructured cases judge by the quality histogram (the harness dih() metrics) + watertightness;
+  once the owner approves a verified-good unstructured run, freeze its metrics as the automated
+  regression baseline in test/.
 CLOSEOUT (README: document the two input kinds, the adapters incl. iso_level, the conforming-mesh
 requirement, and that the generation lattice itself remains structured by design).
 ````

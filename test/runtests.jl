@@ -10,9 +10,9 @@ include("GenerateMeshTests/validate_sdf_values.jl")
 
 @testset "Implicit2TetMesh.jl" begin
 
-    RUN_beam = false
-    RUN_main = false
-    RUN_main_param = false
+    RUN_beam = true
+    RUN_main = true
+    RUN_main_param = true
     RUN_gripper = true
 
     if RUN_beam
@@ -23,7 +23,6 @@ include("GenerateMeshTests/validate_sdf_values.jl")
         @load "../data/beam/Z_beam_HEX8_FineSDF_B-1.0_smooth-1.jld2" fine_sdf
 
         scheme = "A15"
-        # scheme = "Schlafli"
 
         # Plane definition
         plane_definitions = [
@@ -34,7 +33,7 @@ include("GenerateMeshTests/validate_sdf_values.jl")
 
         mesh = BlockMesh(fine_sdf, fine_grid)
 
-        # Choose scheme: "A15" or "Schlafli"
+        # Generate the base A15 tetrahedral mesh
         generate_mesh!(mesh, scheme)
         export_mesh_vtu(mesh, "$(taskName)_1-Generated_Mesh-$(scheme).vtu")
         stats = validate_node_sdf_values(mesh, 0.005)
@@ -44,9 +43,7 @@ include("GenerateMeshTests/validate_sdf_values.jl")
         # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-step_warp$(scheme).vtu")
         stats = validate_node_sdf_values(mesh, 0.005)
 
-        experimental_nzzz = true
-        # experimental_nzzz = false
-        slice_ambiguous_tetrahedra!(mesh, scheme, experimental_nzzz) # Remove elements outside the body
+        slice_ambiguous_tetrahedra!(mesh, scheme) # Remove elements outside the body
         export_mesh_vtu(mesh, "$(taskName)_3-Sliced-$(scheme).vtu")
 
         stats = validate_node_sdf_values(mesh, 0.005)

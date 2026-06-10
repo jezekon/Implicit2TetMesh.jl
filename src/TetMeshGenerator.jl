@@ -4,12 +4,11 @@
 Configuration options for tetrahedral mesh generation.
 
 # Fields
-- `scheme::String`: Discretization scheme ("A15" or "Schlafli", default: "A15")
+- `scheme::String`: Discretization scheme (only "A15" is supported, default: "A15")
 - `warp_param::Float64`: Warping intensity for surface nodes (default: 0.3)
 - `plane_definitions::Union{Vector{PlaneDefinition}, Nothing}`: Cutting plane constraints (optional)
 - `quality_export::Bool`: Export detailed quality metrics (default: false)
 - `correct_volume::Bool`: Apply volume correction to match SDF reference (default: false)
-- `experimental_nzzz::Bool`: Enable experimental NZZZ case processing (default: false)
 """
 struct MeshGenerationOptions
     scheme::String
@@ -17,7 +16,6 @@ struct MeshGenerationOptions
     plane_definitions::Union{Vector{PlaneDefinition},Nothing}
     quality_export::Bool
     correct_volume::Bool
-    experimental_nzzz::Bool
 
     function MeshGenerationOptions(;
         scheme::String = "A15",
@@ -25,21 +23,12 @@ struct MeshGenerationOptions
         plane_definitions::Union{Vector{PlaneDefinition},Nothing} = nothing,
         quality_export::Bool = false,
         correct_volume::Bool = false,
-        experimental_nzzz::Bool = false,
     )
         # Validate inputs
-        scheme in ["A15", "Schlafli"] ||
-            error("Invalid scheme: $scheme. Must be 'A15' or 'Schlafli'")
+        scheme == "A15" || error("Invalid scheme: $scheme. Only 'A15' is supported.")
         warp_param >= 0.0 || error("Invalid warp_param: $warp_param. Must be non-negative.")
 
-        new(
-            scheme,
-            warp_param,
-            plane_definitions,
-            quality_export,
-            correct_volume,
-            experimental_nzzz,
-        )
+        new(scheme, warp_param, plane_definitions, quality_export, correct_volume)
     end
 end
 
@@ -67,7 +56,6 @@ mesh = generate_tetrahedral_mesh("grid.jld2", "sdf.jld2", "beam")
 # With cutting planes
 planes = [PlaneDefinition([-1.0, 0.0, 0.0], [0.0, 10.0, 0.0], Square(30.0))]
 options = MeshGenerationOptions(
-    scheme = "Schlafli",
     warp_param = 0.5,
     plane_definitions = planes
 )
@@ -96,7 +84,7 @@ function generate_tetrahedral_mesh(
     update_connectivity!(mesh)
 
     # Process isosurface boundary - remove exterior elements
-    slice_ambiguous_tetrahedra!(mesh, options.scheme, options.experimental_nzzz)
+    slice_ambiguous_tetrahedra!(mesh, options.scheme)
     update_connectivity!(mesh)
     remove_inverted_elements!(mesh)
 

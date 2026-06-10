@@ -115,54 +115,6 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
 end
 
 # ----------------------------
-# Function for discretizing a cell using Schlafli orthoscheme (unchanged logic, only minor type annotation changes)
-# ----------------------------
-function process_cell_Schlafli!(mesh::BlockMesh, i::Int, j::Int, k::Int)
-    tol = mesh.grid_tol
-    # Get SDF values at the 8 corners of the cell
-    sdf_values = get_cell_sdf_values(mesh, i, j, k)
-    if !any(x -> x <= tol, sdf_values)
-        return
-    end
-
-    local_mapping = Dict{Int,Int}()
-    # Define cell nodes as SVectors from grid
-    cell_nodes = [
-        mesh.grid[i, j, k],     # Node 1: front-bottom-left
-        mesh.grid[i+1, j, k],       # Node 2: front-bottom-right
-        mesh.grid[i+1, j+1, k],       # Node 3: front-top-right
-        mesh.grid[i, j+1, k],       # Node 4: front-top-left
-        mesh.grid[i, j, k+1],     # Node 5: back-bottom-left
-        mesh.grid[i+1, j, k+1],     # Node 6: back-bottom-right
-        mesh.grid[i+1, j+1, k+1],     # Node 7: back-top-right
-        mesh.grid[i, j+1, k+1],      # Node 8: back-top-left
-    ]
-
-    @inbounds for li = 1:8
-        p = cell_nodes[li]
-        p_key = quantize(p, tol)
-        if haskey(mesh.node_hash, p_key)
-            local_mapping[li] = mesh.node_hash[p_key]
-        else
-            push!(mesh.X, p)
-            push!(mesh.node_sdf, sdf_values[li])
-            local_index = length(mesh.X)
-            local_mapping[li] = local_index
-            mesh.node_hash[p_key] = local_index
-        end
-    end
-
-    # Construct tetrahedra according to Schlafli scheme
-    @inbounds for tet in schlafli_tet_connectivity
-        global_tet = [local_mapping[li] for li in tet]
-        tet_sdf = [mesh.node_sdf[idx] for idx in global_tet]
-        if any(x -> x <= 0, tet_sdf)
-            push!(mesh.IEN, global_tet)
-        end
-    end
-end
-
-# ----------------------------
 # Merge duplicate nodes after mesh generation (unchanged logic, only type annotations updated)
 # ----------------------------
 function merge_duplicate_nodes!(mesh::BlockMesh)
@@ -254,10 +206,8 @@ function generate_mesh!(mesh::BlockMesh, scheme::String)
             for k = 1:(mesh.nz-1)
                 if scheme == "A15"
                     process_cell_A15!(mesh, i, j, k)
-                elseif scheme == "Schlafli"
-                    process_cell_Schlafli!(mesh, i, j, k)
                 else
-                    error("Unknown scheme: $scheme")
+                    error("Unknown scheme: $scheme. Only 'A15' is supported.")
                 end
             end
         end

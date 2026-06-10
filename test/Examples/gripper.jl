@@ -63,10 +63,8 @@ mesh = generate_tetrahedral_mesh(
         # ------------------------------------------------------------------
         # scheme: Tetrahedral discretization scheme
         # ------------------------------------------------------------------
-        # "A15"      - A15 lattice structure (27 nodes per unit cell, 46 tets)
-        #              Better surface representation, recommended for most cases
-        # "Schlafli" - Schlafli orthoscheme (8 nodes per unit cell, 6 tets)
-        #              Simpler structure, fewer elements
+        # "A15" - A15 lattice structure (27 nodes per unit cell, 46 tets).
+        #         Currently the only supported scheme.
         scheme = "A15",
 
         # ------------------------------------------------------------------
@@ -99,15 +97,6 @@ mesh = generate_tetrahedral_mesh(
         #         accuracy at the cost of computation time (~20 iterations).
         # false - Skip volume correction (faster, less accurate)
         correct_volume = true,
-
-        # ------------------------------------------------------------------
-        # experimental_nzzz: Enable experimental NZZZ case warping
-        # ------------------------------------------------------------------
-        # Controls handling of elements with 1 negative + 3 zero SDF nodes:
-        # true  - Uses relaxed safety parameters for NZZZ case warping
-        #         (may improve surface quality but less conservative)
-        # false - Conservative mode, discards NZZZ elements (safer, default)
-        experimental_nzzz = true,
     ),
 )
 

@@ -162,10 +162,8 @@ function correct_mesh_volume!(
 
         if scheme == "A15"
             plane_tolerance = 0.15 * mesh.grid_step
-        elseif scheme == "Schlafli"
-            plane_tolerance = 0.3 * mesh.grid_step
         else
-            @error "Unknown scheme"
+            @error "Unknown scheme: $scheme. Only 'A15' is supported."
         end
 
 

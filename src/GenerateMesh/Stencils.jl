@@ -1,32 +1,21 @@
 # Functions for tetrahedral mesh slicing along an isosurface
 
 """
-    slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String, experimental_nzzz::Bool)
+    slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String)
 
-Slice tetrahedra crossing the isosurface (SDF zero level set).
-Identifies elements crossing the boundary and replaces them with smaller
-tetrahedra that accurately represent the surface.
+Slice tetrahedra that stick out across the isosurface (SDF zero level set), trimming each one
+back to the interior region (SDF <= 0). This is a direct port of quartet's `trim_spikes`
+(make_tet_mesh.cpp:221-346) together with its `remove_exterior_tets` test for fully-on-surface
+tetrahedra. Every spike tetrahedron is replaced by smaller tetrahedra whose vertices lie either
+on the original lattice or on the linear edge cut points produced by `cut_edge!`.
 
 # Arguments
 - `mesh::BlockMesh`: The mesh to process
-- `scheme::String`: Discretization scheme ("A15" or "Schlafli")
-- `experimental_nzzz::Bool`: Enable experimental NZZZ case warping (default: false)
+- `scheme::String`: Discretization scheme (only "A15" is supported)
 """
-function slice_ambiguous_tetrahedra!(
-    mesh::BlockMesh,
-    scheme::String,
-    experimental_nzzz::Bool = false,
-)
+function slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String)
     @info "Slicing tetrahedra using trim_spikes logic..."
 
-    # Print experimental mode status
-    if experimental_nzzz
-        @info "  Experimental NZZZ case processing: ENABLED"
-    else
-        @info "  Experimental NZZZ case processing: DISABLED (conservative mode)"
-    end
-
-    warp_params = create_warping_params(scheme, mesh.grid_step)
     cut_map = Dict{Tuple{Int,Int},Int}()
     new_IEN = Vector{Vector{Int64}}()
     sizehint!(new_IEN, length(mesh.IEN))
@@ -35,8 +24,7 @@ function slice_ambiguous_tetrahedra!(
     mesh.IEN = Vector{Vector{Int64}}()
 
     for tet in current_IEN
-        resulting_tets =
-            apply_stencil_trim_spikes!(mesh, tet, cut_map, warp_params, experimental_nzzz)
+        resulting_tets = apply_stencil_trim_spikes!(mesh, tet, cut_map)
         for nt in resulting_tets
             push!(new_IEN, nt)
         end
@@ -46,69 +34,22 @@ function slice_ambiguous_tetrahedra!(
     println("  After slicing: $(length(mesh.IEN)) tetrahedra")
 end
 
-# ----------------------------
-# Helper function: Linear interpolation of the intersection with the zero level of SDF
-# ----------------------------
-function interpolate_zero(
-    p1::SVector{3,Float64},
-    p2::SVector{3,Float64},
-    f1::Float64,
-    f2::Float64,
-    mesh::BlockMesh;
-    tol = mesh.grid_tol,
-    max_iter = 20,
-)::Int64
-    # coords of positive point, coords of negative point, sdf of positive point, sdf of negative point
-
-    pos1 = f1 >= -tol
-    pos2 = f2 >= -tol
-    # If both points have the same polarity according to tolerance, interpolation cannot be done correctly.
-    if pos1 == pos2
-        error(
-            "Both points have the same 'tolerance' polarity; one point must be close to zero (positive) and the other significantly negative.",
-        )
-    end
-
-    # Initialize interval: low and high - assuming p1 and p2 are ordered by f
-    low, high = p1, p2
-    f_low, f_high = f1, f2
-    mid = low
-    for iter = 1:max_iter
-        mid = (low + high) / 2.0
-        f_mid = eval_sdf(mesh, mid)
-        # If the value is close enough to zero, end the iteration
-        if abs(f_mid) < tol
-            break
-        end
-        # Update one of the interval endpoints according to the sign of f_mid
-        if sign(f_mid) == sign(f_low)
-            low, f_low = mid, f_mid
-        else
-            high, f_high = mid, f_mid
-        end
-    end
-
-    # Quantize the found point to avoid duplicates in the hashtable
-    p_key = quantize(mid, tol)
-    sdf_of_iterp_point = eval_sdf(mesh, SVector{3,Float64}(p_key))
-    # println("check interp sdf: ", sdf_of_iterp_point)
-    if haskey(mesh.node_hash, p_key)
-        return mesh.node_hash[p_key]
-    else
-        push!(mesh.X, mid)
-        push!(mesh.node_sdf, 0.0)  # or set exactly to 0
-        new_index = length(mesh.X)
-        mesh.node_hash[p_key] = new_index
-        return new_index
-    end
-end
-
 """
-    cut_edge!(i::Int, j::Int, mesh::BlockMesh, node_sdf::Vector{Float64}, cut_map::Dict{Tuple{Int, Int}, Int})::Int
+    cut_edge!(i, j, mesh, node_sdf, cut_map) -> Int
 
-Calculate the intersection point between an edge (i,j) and the isosurface.
-Returns the node index at the intersection point, creating a new node if needed.
-Handles special cases where nodes are already on the surface.
+Find or create the vertex where the isosurface crosses the edge `(i, j)`, placed at the LINEAR
+interpolation point
+
+    X_cut = (1 - alpha) * X_i + alpha * X_j,    alpha = phi_i / (phi_i - phi_j)  in (0, 1),
+
+exactly as in quartet's `cut_edge` (make_tet_mesh.cpp:196-217). Using the linear point (instead
+of projecting onto the true isosurface) keeps the trimmed tetrahedra well shaped and is
+consistent with the edge-based `warp!`. Each edge is cut only once: the new vertex index is
+cached in `cut_map` (keyed by the canonical edge), so all tetrahedra sharing the edge reuse the
+same vertex and the boundary stays watertight.
+
+If an endpoint already lies on the surface (`|phi| < tol`) that endpoint index is returned
+instead of creating a new vertex.
 """
 function cut_edge!(
     i::Int,
@@ -125,7 +66,7 @@ function cut_edge!(
     is_i_zero = abs(sdf_i) < tol
     is_j_zero = abs(sdf_j) < tol
 
-    # Handle cases where nodes are already on the surface
+    # Handle cases where an endpoint is already on the surface
     if is_i_zero && is_j_zero
         return min(i, j)
     elseif is_i_zero
@@ -134,27 +75,27 @@ function cut_edge!(
         return j
     end
 
-    # Ensure nodes are on opposite sides
+    # The two endpoints must lie on opposite sides of the surface
     if sign(sdf_i) == sign(sdf_j)
         error(
             "cut_edge! called with nodes on same side: i=$i (sdf=$sdf_i), j=$j (sdf=$sdf_j)",
         )
     end
 
-    # Canonical edge representation
+    # Canonical edge representation so the edge is cut only once
     edge = (min(i, j), max(i, j))
-
     if haskey(cut_map, edge)
         return cut_map[edge]
     end
 
-    # Get node positions
-    pos_i = mesh.X[i]
-    pos_j = mesh.X[j]
+    # Linear cut point along the edge (quartet cut_edge): alpha is the fraction from i to the
+    # zero crossing, and the point is the straight-line interpolation between the endpoints.
+    alpha = sdf_i / (sdf_i - sdf_j)
+    cut_point = (1.0 - alpha) * mesh.X[i] + alpha * mesh.X[j]
 
-    new_index = interpolate_zero(pos_i, pos_j, sdf_i, sdf_j, mesh)
-
-    # Cache result
+    push!(mesh.X, cut_point)
+    push!(mesh.node_sdf, 0.0)   # the cut point lies exactly on the surface
+    new_index = length(mesh.X)
     cut_map[edge] = new_index
     return new_index
 end
@@ -209,189 +150,17 @@ function fix_tetrahedron_orientation!(mesh::BlockMesh, tet::Vector{Int})
 end
 
 """
-    warp_node_to_surface(mesh::BlockMesh, position::SVector{3,Float64}, current_sdf::Float64)
-
-Warp a node with positive SDF (outside the surface) to the zero isosurface using
-gradient descent. Returns the new position on the surface.
-"""
-function warp_node_to_surface(
-    mesh::BlockMesh,
-    position::SVector{3,Float64},
-    current_sdf::Float64,
-    max_iter::Int = 20,
-)::SVector{3,Float64}
-
-    tol = mesh.grid_tol
-    current_pos = position
-
-    # Newton iteration to find zero level set
-    for iter = 1:max_iter
-        f = eval_sdf(mesh, current_pos)
-
-        # Close enough to surface
-        if abs(f) < tol
-            break
-        end
-
-        # Compute gradient
-        grad = compute_gradient(mesh, current_pos)
-        norm_grad_sq = sum(abs2, grad)
-
-        # Avoid division by zero
-        if norm_grad_sq < 1e-16
-            @warn "Gradient too small during warp, stopping at SDF = $f"
-            break
-        end
-
-        # Newton step: move along gradient toward zero level
-        dp = (f / norm_grad_sq) * grad
-        current_pos -= dp
-    end
-
-    # Verify we reached the surface
-    final_sdf = eval_sdf(mesh, current_pos)
-    if abs(final_sdf) > tol * 100
-        # @warn "Warp did not converge to surface: final SDF = $final_sdf"
-    end
-
-    return current_pos
-end
-
-"""
-    add_warped_node!(mesh::BlockMesh, position::SVector{3,Float64}, cut_map::Dict)
-
-Add a new node to the mesh at the given position with SDF = 0.
-Uses cut_map to avoid creating duplicate nodes at the same location.
-"""
-function add_warped_node!(
-    mesh::BlockMesh,
-    position::SVector{3,Float64},
-    cut_map::Dict{Tuple{Int,Int},Int},
-)::Int
-
-    tol = mesh.grid_tol
-
-    # Quantize position to handle numerical precision
-    p_key = quantize(position, tol)
-
-    # Check if node already exists at this location
-    if haskey(mesh.node_hash, p_key)
-        return mesh.node_hash[p_key]
-    end
-
-    # Create new node
-    push!(mesh.X, position)
-    push!(mesh.node_sdf, 0.0)  # Surface node
-    new_index = length(mesh.X)
-    mesh.node_hash[p_key] = new_index
-
-    return new_index
-end
-
-# ----------------------------
-# Case-specific warping handlers
-# ----------------------------
-"""
-    process_nzzz_case!(mesh, s_idx, r_idx, q_idx, p_idx, sdf_s, cut_map, params, tol)
-
-Process NZZZ case: one node outside (positive SDF), three on surface (zero SDF).
-
-Warps single outside node to surface with relaxed safety checks (safer case).
-
-# Arguments
-- `mesh::BlockMesh`: The tetrahedral mesh
-- `s_idx, r_idx, q_idx, p_idx::Int`: Node indices (sorted by SDF)
-- `sdf_s::Float64`: SDF value at node s (positive = outside)
-- `cut_map::Dict`: Cache for avoiding duplicate node creation
-- `params::CaseParams`: Safety parameters (relaxed for this case)
-- `tol::Float64`: Tolerance for surface detection
-
-# Returns
-- `Vector{Vector{Int64}}`: New tetrahedron if all checks pass, empty vector otherwise
-"""
-function process_nzzz_case!(
-    mesh::BlockMesh,
-    s_idx::Int,
-    r_idx::Int,
-    q_idx::Int,
-    p_idx::Int,
-    sdf_s::Float64,
-    cut_map::Dict{Tuple{Int,Int},Int},
-    params::CaseParams,
-    tol::Float64,
-)::Vector{Vector{Int64}}
-
-    # Safety check 1: Original centroid distance from surface (relaxed threshold)
-    original_centroid =
-        (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-    if abs(eval_sdf(mesh, original_centroid)) > params.threshold_distance
-        return Vector{Vector{Int64}}()
-    end
-
-    # Calculate original element volume for comparison
-    v_orig = [mesh.X[s_idx], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
-    vol_orig =
-        abs(
-            dot(cross(v_orig[2] - v_orig[1], v_orig[3] - v_orig[1]), v_orig[4] - v_orig[1]),
-        ) / 6.0
-
-    # Warp single outside node to the isosurface
-    s_warped = warp_node_to_surface(mesh, mesh.X[s_idx], sdf_s)
-
-    # Safety check 2: Node displacement limit (relaxed for single node)
-    if norm(s_warped - mesh.X[s_idx]) > params.max_node_displacement
-        return Vector{Vector{Int64}}()
-    end
-
-    # Add warped node to mesh
-    s_new = add_warped_node!(mesh, s_warped, cut_map)
-    new_tet = [s_new, r_idx, q_idx, p_idx]
-
-    # Safety check 3: Volume ratio (relaxed minimum)
-    v_new = [mesh.X[s_new], mesh.X[r_idx], mesh.X[q_idx], mesh.X[p_idx]]
-    vol_new =
-        abs(dot(cross(v_new[2] - v_new[1], v_new[3] - v_new[1]), v_new[4] - v_new[1])) / 6.0
-
-    if vol_new < params.min_volume_ratio * vol_orig
-        return Vector{Vector{Int64}}()
-    end
-
-    # Safety check 4: New centroid must be inside geometry (sdf < 0 under phi < 0 = inside)
-    centroid = (mesh.X[s_new] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-    if eval_sdf(mesh, centroid) >= -tol
-        return Vector{Vector{Int64}}()
-    end
-
-    # Safety check 5: Correct element orientation
-    fix_tetrahedron_orientation!(mesh, new_tet)
-    if !check_tetrahedron_orientation(mesh, new_tet)
-        return Vector{Vector{Int64}}()
-    end
-
-    # Safety check 6: Dihedral angle limits (both min and max)
-    min_dihedral, max_dihedral = compute_dihedral_angle_range(mesh, new_tet)
-
-    # Reject if any angle is too small (< 10°) or too large (> 140°)
-    if min_dihedral < params.min_dihedral_angle || max_dihedral > params.max_dihedral_angle
-        return Vector{Vector{Int64}}()
-    end
-
-    return [new_tet]
-end
-
-"""
     apply_stencil_trim_spikes!(mesh::BlockMesh, tet::Vector{Int64}, cut_map::Dict{Tuple{Int, Int}, Int})
 
-Apply trimming algorithm to a tetrahedron that crosses the isosurface.
-Returns new tetrahedra that accurately represent the interior region (SDF ≤ 0).
-Uses case-by-case analysis based on SDF sign patterns for robust slicing.
+Apply the trimming algorithm to a single tetrahedron that crosses the isosurface.
+Returns new tetrahedra that accurately represent the interior region (SDF <= 0).
+The SDF sign pattern is classified case-by-case, ported 1:1 from quartet `trim_spikes`
+(make_tet_mesh.cpp:221-346); the all-on-surface case mirrors `remove_exterior_tets`.
 """
 function apply_stencil_trim_spikes!(
     mesh::BlockMesh,
     tet::Vector{Int64},
     cut_map::Dict{Tuple{Int,Int},Int},
-    warp_params::WarpingSafetyParams,
-    experimental_nzzz::Bool = false,
 )::Vector{Vector{Int64}}
 
     # Get SDF values for tetrahedron nodes
@@ -416,14 +185,16 @@ function apply_stencil_trim_spikes!(
     p = [1, 2, 3, 4]
     flipped = false
 
-    # Comparison function for consistent vertex ordering.
-    # Descending by SDF, with the original node index as a stable tie-breaker. Under the
-    # negated convention this is the exact mirror of the previous ascending sort
-    # (-a > -b  <=>  a < b), so the resulting permutation and `flipped` are unchanged.
+    # Comparison function for consistent vertex ordering, matching quartet trim_spikes.
+    # Descending by SDF; ties are broken so the LARGER original node index is treated as the
+    # more-outside vertex (the same direction quartet uses when it swaps on `index <`). Because
+    # this is a global total order on (SDF, index), face-adjacent tetrahedra sort a shared quad
+    # identically and therefore split it along the same diagonal -- this is what keeps the
+    # boundary watertight.
     less_than(idx1, idx2) =
         (vert_data[idx1][1] > vert_data[idx2][1]) || (
             vert_data[idx1][1] == vert_data[idx2][1] &&
-            vert_data[idx1][2] < vert_data[idx2][2]
+            vert_data[idx1][2] > vert_data[idx2][2]
         )
 
     # Sort vertices while tracking orientation flips
@@ -457,10 +228,10 @@ function apply_stencil_trim_spikes!(
         @warn "SDF values not sorted: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p"
     end
 
-    # Case 3: All nodes on surface (abs(SDF) < tol) - keep original (ZZZZ case)
+    # Case 3: All nodes on surface (abs(SDF) <= tol) - quartet remove_exterior_tets test:
+    # keep the tetrahedron only if its centroid lies inside the geometry.
     if all(s -> abs(s) <= tol, node_sdf)
         centroid = (mesh.X[s_idx] + mesh.X[r_idx] + mesh.X[q_idx] + mesh.X[p_idx]) / 4.0
-        # println("ZZZZ case, nodes sdf: $(node_sdf)")
         if eval_sdf(mesh, centroid) < 0.0
             # This tetrahedron represents the surface, keep it
             return [tet]
@@ -474,14 +245,12 @@ function apply_stencil_trim_spikes!(
     #   outside : sdf >  tol   (positive)
     #   inside  : sdf < -tol   (negative)
     #   surface : |sdf| <= tol (zero)
-    # The historical case labels below (NNNP, NPPP, ...) name the geometric pattern;
-    # Etapa 3 aligns them 1:1 with quartet's notation.
+    # The case labels below (NNNP, NPPP, ...) name the geometric pattern and line up 1:1 with
+    # quartet's notation (+++-, +---, ...); see the per-branch comments.
     is_s_outside = sdf_s > tol
     is_r_outside = sdf_r > tol
     is_q_outside = sdf_q > tol
-    is_p_outside = sdf_p > tol
 
-    # is_s_inside = sdf_s < -tol
     is_p_inside = sdf_p < -tol
     is_q_inside = sdf_q < -tol
     is_r_inside = sdf_r < -tol
@@ -497,7 +266,6 @@ function apply_stencil_trim_spikes!(
     function add_tet!(t::Vector{Int})
         # Skip degenerate cases (duplicate vertices)
         if length(Set(t)) != 4
-            # @warn "Degenerate tetrahedron generated (duplicate nodes): $t. Skipping."
             return
         end
 
@@ -510,46 +278,19 @@ function apply_stencil_trim_spikes!(
         push!(new_tets, t)
     end
 
-    # --- Case analysis based on SDF sign patterns --- (S ≤ R ≤ Q ≤ P)
-    if is_s_outside && is_p_surface # Cases: NNNZ, NNZZ, NZZZ
-        if is_s_outside && is_r_outside && is_q_outside && is_p_surface
-            # NNNZ: Three nodes outside, one on surface
-            # Too risky - warping 3 nodes simultaneously could cause mesh intersections
-            return Vector{Vector{Int64}}()
+    # --- Case analysis based on SDF sign patterns --- (S >= R >= Q >= P)
 
-        elseif is_s_outside && is_r_outside && is_q_surface && is_p_surface
-            return Vector{Vector{Int64}}()
+    # Entirely outside or on the surface (quartet's vphi[s]==0 branch: +++0 / ++00 / +000).
+    # The most-inside vertex is already on the surface, so no interior region remains -> discard.
+    if is_p_surface
+        return Vector{Vector{Int64}}()
 
-        elseif is_s_outside && is_r_surface && is_q_surface && is_p_surface
-            # NZZZ: One node outside, three on surface - use relaxed parameters
-            if experimental_nzzz
-
-                return process_nzzz_case!(
-                    mesh,
-                    s_idx,
-                    r_idx,
-                    q_idx,
-                    p_idx,
-                    sdf_s,
-                    cut_map,
-                    warp_params.nzzz,
-                    tol,
-                )
-            else
-                # Conservative mode: Discard element
-                return Vector{Vector{Int64}}()
-            end
-        else
-            println("  -> NO MATCH!")
-            return Vector{Vector{Int64}}()
-        end
-
-        # Case (Z,!N,!N,P): Surface node with all others on surface or inside
-    elseif is_s_surface && !is_r_outside && !is_q_outside && is_p_inside # ZZZP, ZZPP, ZPPP
-        # println("ZZZP, ZZPP, ZPPP")
+        # Surface/interior tetrahedron with no outside vertex: ZZZP, ZZPP, ZPPP. quartet leaves
+        # these untouched (all phi <= 0), so we keep them as-is.
+    elseif is_s_surface && !is_r_outside && !is_q_outside && is_p_inside
         return [tet]
 
-        # Case NNNP: Three nodes outside, one inside
+        # Case NNNP (quartet +++-): three nodes outside, one inside
     elseif is_s_outside && is_r_outside && is_q_outside && is_p_inside
         # Cut three edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -563,7 +304,7 @@ function apply_stencil_trim_spikes!(
             add_tet!([sp, rp, qp, p_idx])
         end
 
-        # Case NPPP: One node outside, three inside
+        # Case NPPP (quartet +---): one node outside, three inside
     elseif is_s_outside && is_r_inside
         if !is_r_outside && !is_q_outside # Confirm r, q, p are interior nodes
             # Cut edges from outside node to each interior node
@@ -571,7 +312,8 @@ function apply_stencil_trim_spikes!(
             sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
             sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
 
-            # Create three tetrahedra filling the interior region
+            # Tetrahedralize the resulting triangular prism. The quad faces are split to the
+            # deepest vertex; the consistent sort above makes the split match face-adjacent tets.
             if flipped
                 add_tet!([q_idx, r_idx, p_idx, sr])
                 add_tet!([p_idx, q_idx, sr, sq])
@@ -586,7 +328,7 @@ function apply_stencil_trim_spikes!(
             return Vector{Vector{Int64}}()
         end
 
-        # Case NNPP: Two nodes outside, two inside
+        # Case NNPP (quartet ++--): two nodes outside, two inside
     elseif is_r_outside && is_q_inside
         # Cut all four edges crossing the isosurface
         sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
@@ -594,7 +336,7 @@ function apply_stencil_trim_spikes!(
         rq = cut_edge!(r_idx, q_idx, mesh, mesh.node_sdf, cut_map)
         rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
 
-        # Create three tetrahedra for interior region
+        # Create three tetrahedra for interior region (quad split consistent with the sort)
         if flipped
             add_tet!([p_idx, rq, q_idx, sq])
             add_tet!([p_idx, sp, sq, rp])
@@ -605,7 +347,7 @@ function apply_stencil_trim_spikes!(
             add_tet!([p_idx, sq, rp, rq])
         end
 
-        # Case NZPP: One outside, one on surface, two inside
+        # Case NZPP (quartet +0--): one outside, one on surface, two inside
     elseif is_s_outside && is_r_surface && is_q_inside
         # Cut edges from outside node to interior nodes
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -620,7 +362,7 @@ function apply_stencil_trim_spikes!(
             add_tet!([r_idx, p_idx, sq, sp])
         end
 
-        # Case NNZP: Two outside, one on surface, one inside
+        # Case NNZP (quartet ++0-): two outside, one on surface, one inside
     elseif is_r_outside && is_q_surface && is_p_inside
         # Cut edges from outside nodes to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
@@ -633,7 +375,7 @@ function apply_stencil_trim_spikes!(
             add_tet!([q_idx, p_idx, rp, sp])
         end
 
-        # Case NZZP: One outside, two on surface, one inside
+        # Case NZZP (quartet +00-): one outside, two on surface, one inside
     elseif is_s_outside && is_r_surface && is_q_surface && is_p_inside
         # Cut edge from outside node to inside node
         sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)

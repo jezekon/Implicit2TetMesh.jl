@@ -20,7 +20,6 @@ using Printf
 using Implicit2TetMesh.Fundamentals
 
 include("Schemes/A15Scheme.jl")
-include("Schemes/SchlafliScheme.jl")
 include("TetGenerator.jl")
 include("NewCases-Experimental.jl")
 include("Stencils.jl")

@@ -11,9 +11,9 @@ Implicit2TetMesh is an experimental Julia package for generating high-quality te
 </p>
 
 ## Features
-- **Robust Meshing**: High-quality tetrahedral mesh generation from implicit geometries using A15 (body-centered cubic) and Schlafli (orthoscheme) discretizations
+- **Robust Meshing**: High-quality tetrahedral mesh generation from implicit geometries on an A15 (body-centered cubic) acute lattice
 - **Edge-based Warping**: Lattice vertices near the surface are snapped onto the linear cut points of sign-crossing edges (isosurface-stuffing warp), which collapses the sliver tetrahedra
-- **Isosurface Refinement**: Advanced boundary processing with experimental NZZZ case handling for thin features relative to characteristic element size
+- **Boundary Trimming**: Tetrahedra crossing the surface are trimmed back to the interior with quartet-style `trim_spikes` stencils; a consistent quad-split diagonal keeps the trimmed boundary crack-free
 - **Volume Correction**: Precise volume preservation using automatic surface node adjustment
 - **Geometric Constraints**: Bounded plane definitions for selective node alignment
 - **Mesh Operations**: Slicing, isolated component removal, inverted element fixing, and VTU export with mesh quality metrics
@@ -53,24 +53,20 @@ Configure the mesh generation process with the following options:
 
 ```julia
 MeshGenerationOptions(;
-    scheme::String = "A15",                           # Discretization scheme: "A15" or "Schlafli"
+    scheme::String = "A15",                           # Discretization scheme (only "A15" is supported)
     warp_param::Float64 = 0.3,                        # Warping intensity for plane alignment (0.0 = disabled)
     plane_definitions::Union{Vector{PlaneDefinition}, Nothing} = nothing,  # Cutting planes for BC application
     quality_export::Bool = false,                     # Export detailed quality metrics
-    correct_volume::Bool = false,                     # Apply volume correction algorithm
-    experimental_nzzz::Bool = false                   # Enable experimental NZZZ case warping
+    correct_volume::Bool = false                      # Apply volume correction algorithm
 )
 ```
 #### Option Details
 
-- **scheme**: 
-  - `"A15"`: Body-centered cubic lattice discretization (recommended for most cases)
-  - `"Schlafli"`: Orthoscheme discretization (better for axis-aligned features)
+- **scheme**: `"A15"` — body-centered cubic acute lattice (the only supported scheme)
 - **warp_param**: Controls how strongly nodes are attracted to cutting planes (0.0-1.0 range recommended)
 - **plane_definitions**: Vector of `PlaneDefinition` objects for boundary plane constraints
 - **quality_export**: When `true`, exports additional quality metrics (Jacobian determinants, dihedral angles, volume ratios)
 - **correct_volume**: Enables iterative volume correction to match reference SDF volume (may increase processing time)
-- **experimental_nzzz**: Enables experimental warping for NZZZ cases (one node outside, three on surface). Use with caution.
 
 ### Example Usage
 ```julia
@@ -93,8 +89,8 @@ julia --project=. test/Examples/gripper.jl
 ```
 ___
 ## TODO List
-- [ ] Improve NZZZ case handling based on dihedral angles
-- [ ] Add support for NNZZ cases (two nodes outside, two on surface)
+- [ ] Principled surface-tetrahedron (quadruple-zero) handling per Labelle §3.4
+- [ ] Optional adaptive refinement for thin features (sub-lattice-thickness walls)
 - [ ] Performance optimizations for large meshes
 
 ## Acknowledgments

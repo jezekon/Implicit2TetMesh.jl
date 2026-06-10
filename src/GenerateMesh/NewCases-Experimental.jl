@@ -45,7 +45,7 @@ NNZZ case (2 nodes warped) uses stricter parameters.
 NZZZ case (1 node warped) uses relaxed parameters.
 
 # Arguments
-- `scheme::String`: Discretization scheme ("A15" or "Schlafli")
+- `scheme::String`: Discretization scheme (only "A15" is supported)
 - `grid_step::Float64`: Mesh grid step size
 
 # Returns
@@ -58,12 +58,8 @@ function create_warping_params(scheme::String, grid_step::Float64)
         nnzz = CaseParams(base_threshold, 0.2 * grid_step, 0.05, 10.0, 140.0)
         # NZZZ: Relaxed parameters (warping only 1 node)
         nzzz = CaseParams(2.0 * base_threshold, 0.4 * grid_step, 0.025, 10.0, 140.0)
-    elseif scheme == "Schlafli"
-        base_threshold = 0.3 * grid_step
-        nnzz = CaseParams(base_threshold, 0.4 * grid_step, 0.05, 10.0, 140.0)
-        nzzz = CaseParams(2.0 * base_threshold, 0.8 * grid_step, 0.025, 10.0, 140.0)
     else
-        error("Unknown scheme: $scheme")
+        error("Unknown scheme: $scheme. Only 'A15' is supported.")
     end
     return WarpingSafetyParams(nnzz, nzzz)
 end
