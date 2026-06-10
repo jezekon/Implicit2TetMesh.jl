@@ -517,3 +517,56 @@ VERIFY:
 CLOSEOUT (README: document the two input kinds, the adapters incl. iso_level, the conforming-mesh
 requirement, and that the generation lattice itself remains structured by design).
 ````
+
+---
+
+## Etapa 9 — Functional-surface protection & optional AM-ready surface output (OPTIONAL; do LAST)
+
+````text
+ETAPA 9 — Protect functional surfaces from node-moving steps; optional AM surface smoothing
+(OPTIONAL, lowest priority — a SCOPE EXPANSION beyond the quartet/Labelle volume-mesher goal.
+Do only after Etapas 1-8, only if the use case calls for it. Independent of the core pipeline.)
+
+MOTIVATION: Any step that MOVES surface nodes after meshing (volume correction, surface smoothing,
+mesh optimization) risks displacing FUNCTIONAL surfaces — the regions where FE boundary conditions
+live (loads, supports, symmetry planes, bolt holes, bearing faces). Moving those invalidates the
+downstream FE/TO analysis. The mesher currently protects PLANAR functional regions via
+plane_definitions + is_on_plane (manual, planar only). This stage generalizes that protection and,
+optionally, adds a manufacturable (AM-ready) smoothed surface output.
+
+KEY DECISIONS (from the 2026-06-10 assessment — keep in mind):
+  • In a TO/FE workflow the functional surfaces are KNOWN UPSTREAM (they ARE the BC regions of the
+    optimization problem). PREFER propagating that ground truth into the mesher (generalize
+    plane_definitions to non-planar / tagged regions: cylinders for holes, arbitrary caller-supplied
+    node/face tag sets) over heuristically re-detecting it from the faceted geometry.
+  • Geometric AUTO-DETECTION earns its place ONLY when that info is lost/absent: third-party STL/SDF
+    with no provenance, or when non-planar functional features must be found automatically.
+  • Do NOT use functional-surface locking to justify keeping a flawed node-mover. (Volume correction
+    is being removed for exactly its surface-moving / surface-fidelity problems.)
+
+REFERENCE (external repo, not in Literature/):
+  /Users/ondra/github/Disertace/Literature_md/2_State_of_the_Art/
+      2021_Bacciaglia_SurfaceSmoothingForTopologicalOptimized.md
+  An STL surface-smoothing method for TO→AM with two automatic "no-smoothing-space" detectors:
+    - detect_flat_surface: cluster facets by shared normal (threshold L) -> planar regions;
+    - detect_holes_edges: closed loops of ~90° sharp edges -> hole rims (perpendicular holes only).
+  Both FREEZE the detected vertices during smoothing AND volume rescaling. NOTE: the smoothing CORE
+  (HC-SDU) is NOT wanted for the FE-quality volume mesh (it fights the Labelle Hausdorff/dihedral
+  guarantees); only the freeze-set concept transfers, unless an AM-ready surface output is added.
+
+TASKS (pick per actual need; all OPTIONAL, default OFF):
+  A. Generalize functional-region protection: extend plane_definitions / BoundedPlane to non-planar
+     tagged regions, reusing boundary-face extraction. Any node-moving step consults this freeze-set.
+  B. (Only if inputs lack BC provenance) Automatic functional-feature detection on the EXTRACTED
+     boundary: robust flat-region detector (normal clustering with a tolerance suited to the faceted
+     isosurface boundary) + hole-rim detector (sharp-edge loops). Validate against the known
+     plane_definitions as ground truth on beam/gripper before trusting it.
+  C. (Only if AM-ready output is in scope) An OPTIONAL feature-preserving surface smoothing pass
+     (Bacciaglia HC-SDU or Taubin) on a COPY of the boundary surface, freeze-set held fixed, with
+     volume rescaling — exported as a separate manufacturable STL, NEVER mutating the FE volume mesh.
+
+VERIFY: feature OFF -> beam/gripper byte-identical to Etapa-8. Protection ON -> zero displacement on
+the freeze-set. If smoothing is added: FE volume mesh unchanged, only the exported AM surface differs;
+report compliance impact (the paper saw ~2% on the GE bracket). CLOSEOUT as usual (README: document
+it as optional, default OFF, a scope expansion beyond the isosurface-stuffing core).
+````
