@@ -57,22 +57,6 @@ include("GenerateMeshTests/validate_sdf_values.jl")
 
         remove_isolated_components!(mesh, keep_largest = true)
         update_connectivity!(mesh)
-
-        # Korekce objemu
-        success = correct_mesh_volume!(
-            mesh,
-            fine_sdf,
-            fine_grid,
-            scheme,
-            plane_definitions = plane_definitions,
-        )
-        remove_inverted_elements!(mesh)
-
-        # Vyhodnocení přesnosti
-        # assess_volume_accuracy(mesh, fine_sdf, fine_grid)
-
-        export_mesh_vtu(mesh, "$(taskName)_4-Corrected_Volume-$(scheme).vtu")
-        # export_mesh_vtu_quality(mesh, "$(taskName)_TriMesh-volume_modif_$(scheme).vtu")
     end
 
     #     # Apply cutting planes only if they are defined
@@ -190,7 +174,6 @@ include("GenerateMeshTests/validate_sdf_values.jl")
             warp_param = 0.3,            # Small warping parameter for precise boundary alignment
             plane_definitions = plane_definitions,  # Apply boundary plane constraints
             quality_export = true,       # Export detailed quality metrics for analysis
-            correct_volume = true,        # Apply volume correction to match reference geometry
         )
 
         # Display mesh generation settings
@@ -198,7 +181,6 @@ include("GenerateMeshTests/validate_sdf_values.jl")
         println("  Discretization scheme: $(options.scheme)")
         println("  Warp parameter: $(options.warp_param)")
         println("  Quality export: $(options.quality_export)")
-        println("  Volume correction: $(options.correct_volume)")
         println()
 
         # Execute tetrahedral mesh generation

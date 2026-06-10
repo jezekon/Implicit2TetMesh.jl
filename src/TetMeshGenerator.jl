@@ -8,27 +8,24 @@ Configuration options for tetrahedral mesh generation.
 - `warp_param::Float64`: Warping intensity for surface nodes (default: 0.3)
 - `plane_definitions::Union{Vector{PlaneDefinition}, Nothing}`: Cutting plane constraints (optional)
 - `quality_export::Bool`: Export detailed quality metrics (default: false)
-- `correct_volume::Bool`: Apply volume correction to match SDF reference (default: false)
 """
 struct MeshGenerationOptions
     scheme::String
     warp_param::Float64
     plane_definitions::Union{Vector{PlaneDefinition},Nothing}
     quality_export::Bool
-    correct_volume::Bool
 
     function MeshGenerationOptions(;
         scheme::String = "A15",
         warp_param::Float64 = 0.3,
         plane_definitions::Union{Vector{PlaneDefinition},Nothing} = nothing,
         quality_export::Bool = false,
-        correct_volume::Bool = false,
     )
         # Validate inputs
         scheme == "A15" || error("Invalid scheme: $scheme. Only 'A15' is supported.")
         warp_param >= 0.0 || error("Invalid warp_param: $warp_param. Must be non-negative.")
 
-        new(scheme, warp_param, plane_definitions, quality_export, correct_volume)
+        new(scheme, warp_param, plane_definitions, quality_export)
     end
 end
 
@@ -95,17 +92,6 @@ function generate_tetrahedral_mesh(
     # Display volume statistics
     @info "Computing mesh volumes..."
     TetMesh_volumes(mesh)
-
-    # Optional: correct volume to match SDF reference
-    if options.correct_volume
-        correct_mesh_volume!(
-            mesh,
-            fine_sdf,
-            fine_grid,
-            options.scheme,
-            plane_definitions = options.plane_definitions,
-        )
-    end
 
     # Export initial mesh to VTK format
     output_file = "$(output_prefix)_TriMesh-$(options.scheme).vtu"

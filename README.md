@@ -14,7 +14,6 @@ Implicit2TetMesh is an experimental Julia package for generating high-quality te
 - **Robust Meshing**: High-quality tetrahedral mesh generation from implicit geometries on an A15 (body-centered cubic) acute lattice
 - **Edge-based Warping**: Lattice vertices near the surface are snapped onto the linear cut points of sign-crossing edges (isosurface-stuffing warp), which collapses the sliver tetrahedra
 - **Boundary Trimming**: Tetrahedra crossing the surface are trimmed back to the interior with quartet-style `trim_spikes` stencils; a consistent quad-split diagonal keeps the trimmed boundary crack-free. Surface-only ("quadruple-zero") tetrahedra are resolved with Labelle's §3.4 heuristic, which removes bubbles at the trimming stage instead of relying on a global cleanup pass
-- **Volume Correction**: Precise volume preservation using automatic surface node adjustment
 - **Geometric Constraints**: Bounded plane definitions for selective node alignment
 - **Mesh Operations**: Slicing, isolated component removal, inverted element fixing, and VTU export with mesh quality metrics
 
@@ -50,6 +49,10 @@ After trimming, some tetrahedra end up with **all four vertices on the surface**
 2. Of the well-shaped survivors, the number of faces that **adjoin the interior mesh** decides the outcome: all four faces adjoin → **retain** (the tetrahedron fills a pocket in the boundary); no face adjoins → **discard** (an isolated "bubble"); otherwise the **SDF sign at the centroid** decides (inside → keep).
 
 Because bubbles are removed here, the global `remove_isolated_components!` pass that follows is now only a safety net (it keeps the largest connected component for geometries that split into disconnected pieces). Where four warped vertices lie on a sub-lattice-thickness thin feature, the boundary can still self-touch (two surface sheets meeting along an edge); such pinches reflect the uniform lattice resolution and are the target of the planned adaptive refinement, not cracks — the trimmed boundary stays free of open (hole) edges.
+#### Volume Accuracy:
+The mesh volume is an honest discretization of the zero isosurface. Because the boundary is approximated by flat triangles, the meshed volume is slightly smaller than the reference SDF volume wherever the isosurface is curved (about 2.7 % on the beam, 0.4 % on the gripper); this gap shrinks as the lattice is refined, not by moving nodes after meshing.
+
+The package therefore applies **no** post-hoc volume correction. Displacing surface nodes onto a single global SDF level after meshing is equivalent to meshing the `phi = c` isocontour, but done crudely — it degrades the surface fidelity the warp establishes and can produce spiked or inverted elements (the quartet / Labelle reference algorithms have no such step). If an exact target volume is ever required (for example a volume fraction carried over from topology optimization), the recommended approach is to choose the iso-level offset `c` by bisection **before** meshing and run the normal pipeline on the shifted field `phi − c`. That keeps the mesh robust (no spikes or inversions) and preserves the full surface-fidelity guarantee.
 #### Return Value:
 - `mesh::BlockMesh`: The generated tetrahedral mesh
 - **Output files**: `.vtu` mesh visualization files for Paraview
@@ -63,8 +66,7 @@ MeshGenerationOptions(;
     scheme::String = "A15",                           # Discretization scheme (only "A15" is supported)
     warp_param::Float64 = 0.3,                        # Warping intensity for plane alignment (0.0 = disabled)
     plane_definitions::Union{Vector{PlaneDefinition}, Nothing} = nothing,  # Cutting planes for BC application
-    quality_export::Bool = false,                     # Export detailed quality metrics
-    correct_volume::Bool = false                      # Apply volume correction algorithm
+    quality_export::Bool = false                      # Export detailed quality metrics
 )
 ```
 #### Option Details
@@ -73,7 +75,6 @@ MeshGenerationOptions(;
 - **warp_param**: Controls how strongly nodes are attracted to cutting planes (0.0-1.0 range recommended)
 - **plane_definitions**: Vector of `PlaneDefinition` objects for boundary plane constraints
 - **quality_export**: When `true`, exports additional quality metrics (Jacobian determinants, dihedral angles, volume ratios)
-- **correct_volume**: Enables iterative volume correction to match reference SDF volume (may increase processing time)
 
 ### Example Usage
 ```julia
