@@ -9,12 +9,14 @@
    consistent with the literature, and **end** by running regression, updating
    `README.md`, committing to `dev`, and stopping for review.
 
-**Status (updated 2026-06-10):**
-  • Etapas 1-4 — DONE, committed on `dev` (Etapa 4 = 25c6f70, awaiting review).
+**Status (updated 2026-06-11):**
+  • Etapas 1-5 — DONE, committed on `dev` (Etapa 4 = 25c6f70, Etapa 5 = 0bc8409; awaiting review).
   • Volume correction — REMOVED (standalone cleanup, c224f05); the pipeline no longer has a
     correct_mesh_volume! step, so any "compare before correct_mesh_volume!" note below is moot.
   • Etapa 9 — only the prompt text lives in this file (12e9bc9); no code yet.
-  • NEXT coding stage: **Etapa 5** (exact predicates + perf). Etapas 6-9 are optional/later.
+  • NEXT coding stage: **Etapa 6** (optional adaptive octree sizing; start of Phase 2).
+    Etapas 6-9 are optional/later. NOTE: the "Key files" line numbers below have drifted since
+    Etapa 5 (Stencils.jl / RemoveIsolatedComponents.jl grew) — re-grep before relying on them.
 
 Etapa 0 (validation experiment) is also complete. It proved that replacing the
 current Newton‑to‑isosurface warp with quartet‑style edge warping collapses the slivers
@@ -364,7 +366,7 @@ CLOSEOUT (README: describe the boundary handling).
 
 ---
 
-## Etapa 5 — Exact predicates + performance  ⏭️ NEXT
+## Etapa 5 — Exact predicates + performance  ✅ DONE (awaiting review)
 
 ````text
 ETAPA 5 — Robust geometric predicates + speed (depends on Etapas 2-4)
