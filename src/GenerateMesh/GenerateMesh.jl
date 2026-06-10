@@ -16,6 +16,7 @@ using StaticArrays
 using LinearAlgebra
 using WriteVTK
 using Printf
+using ExactPredicates: orient   # Shewchuk's exact 3D orientation predicate
 
 using Implicit2TetMesh.Fundamentals
 

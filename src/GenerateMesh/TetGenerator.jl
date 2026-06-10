@@ -95,20 +95,11 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
     @inbounds for tet in tetra_connectivity
         global_tet = [local_mapping[li] for li in tet]
 
-        # Get the coordinates of the tetrahedron vertices
-        tet_coords = [mesh.X[idx] for idx in global_tet]
-
-        # Directly evaluate SDF at each vertex position for maximum accuracy
-        # This is more accurate than using pre-computed values
-        tet_sdf = [eval_sdf(mesh, coord) for coord in tet_coords]
-
-        # Update the stored SDF values with these more accurate evaluations
-        for (i, idx) in enumerate(global_tet)
-            mesh.node_sdf[idx] = tet_sdf[i]
-        end
-
-        # Include tetrahedron only if at least one vertex is inside or on the boundary
-        if any(x -> x <= 0, tet_sdf)
+        # node_sdf was already filled with eval_sdf at node creation above (same point, same
+        # value), so reuse the cached value instead of re-evaluating the SDF once per incident
+        # tetrahedron -- every shared node would otherwise be evaluated many times over.
+        # Include the tetrahedron only if at least one vertex is inside or on the boundary.
+        if any(idx -> mesh.node_sdf[idx] <= 0, global_tet)
             push!(mesh.IEN, global_tet)
         end
     end

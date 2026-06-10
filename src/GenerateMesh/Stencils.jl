@@ -116,10 +116,30 @@ function cut_edge!(
 end
 
 """
+    is_positively_oriented(mesh::BlockMesh, tet) -> Bool
+
+The single, EXACT orientation test for a tetrahedron. Returns true iff the tetrahedron
+`(v1, v2, v3, v4)` has strictly positive signed volume, i.e. the Jacobian determinant
+`det[v2-v1, v3-v1, v4-v1] > 0` -- the same sign convention the code used before, but decided
+EXACTLY (no floating-point tolerance) via Shewchuk's adaptive predicate `ExactPredicates.orient`.
+
+NOTE on the sign: `ExactPredicates.orient(a, b, c, d)` returns the OPPOSITE sign of
+`dot(b-a, cross(c-a, d-a))` (verified empirically), so a positive signed volume corresponds to
+`orient(...) < 0`. A flat (zero-volume / coplanar) tetrahedron returns false.
+
+This is the ONE place the orientation sign is decided; every orientation/inversion check in this
+file routes through it so the decision is never duplicated.
+"""
+function is_positively_oriented(mesh::BlockMesh, tet)::Bool
+    return orient(mesh.X[tet[1]], mesh.X[tet[2]], mesh.X[tet[3]], mesh.X[tet[4]]) < 0
+end
+
+"""
     check_tetrahedron_orientation(mesh::BlockMesh, tet::Vector{Int})
 
 Check if a tetrahedron has positive orientation (positive Jacobian determinant).
-Returns true for correctly oriented tetrahedra, false for inverted ones.
+Returns true for correctly oriented tetrahedra, false for inverted (or flat) ones. Validates the
+indices first, then delegates the sign decision to the exact `is_positively_oriented`.
 """
 function check_tetrahedron_orientation(mesh::BlockMesh, tet::Vector{Int})
     # Validate indices
@@ -128,19 +148,7 @@ function check_tetrahedron_orientation(mesh::BlockMesh, tet::Vector{Int})
         return false
     end
 
-    # Get tetrahedron vertices
-    vertices = [mesh.X[tet[i]] for i = 1:4]
-
-    # Calculate edge vectors from first vertex
-    a = vertices[2] - vertices[1]
-    b = vertices[3] - vertices[1]
-    c = vertices[4] - vertices[1]
-
-    # Calculate Jacobian determinant (proportional to signed volume)
-    det_value = dot(a, cross(b, c))
-
-    # Positive determinant indicates correct orientation
-    return det_value > 1e-12
+    return is_positively_oriented(mesh, tet)
 end
 
 """
@@ -528,17 +536,19 @@ const RESET = "\e[0m"
 Improves mesh quality by fixing inverted tetrahedra and removing degenerate elements.
 
 This function:
-1. Attempts to fix elements with negative Jacobian determinant (inverted elements)
-   by reordering their vertices to achieve positive orientation
-2. Removes elements with near-zero volume (degenerate elements)
-3. Updates mesh connectivity to remove orphaned nodes
-4. Rebuilds the inverse node-to-element connectivity (INE)
+1. Fixes elements with negative orientation (inverted elements) by swapping two vertices.
+   The orientation SIGN is decided EXACTLY by `is_positively_oriented` (no tolerance).
+2. Removes elements with near-zero volume (degenerate elements). This is the only place a
+   tolerance is kept, and it gates the volume MAGNITUDE, not the sign.
+3. Rebuilds the inverse node-to-element connectivity (INE). Orphaned nodes left by removed
+   elements are compacted later by `update_connectivity!`.
 
 Returns the modified mesh.
 """
 function remove_inverted_elements!(mesh::BlockMesh)
     @info "Fixing elements orientation..."
-    # Set tolerance for identifying near-zero volumes
+    # Tolerance used ONLY to drop near-zero-volume (degenerate) elements. The orientation SIGN
+    # itself is decided exactly by is_positively_oriented, with no tolerance.
     volume_tolerance = mesh.grid_tol * 1e-6
 
     # Track statistics for reporting
@@ -550,103 +560,39 @@ function remove_inverted_elements!(mesh::BlockMesh)
     valid_elements = Vector{Vector{Int}}()
     sizehint!(valid_elements, length(mesh.IEN))
 
-    for (elem_idx, tet) in enumerate(mesh.IEN)
+    for tet in mesh.IEN
         # Skip degenerate elements with duplicate vertices
         if length(Set(tet)) != 4
             zero_volume_elements += 1
             continue
         end
 
-        # Calculate determinant (proportional to signed volume)
-        vertices = SVector{4,SVector{3,Float64}}(
-            mesh.X[tet[1]],
-            mesh.X[tet[2]],
-            mesh.X[tet[3]],
-            mesh.X[tet[4]],
-        )
-        a = vertices[2] - vertices[1]
-        b = vertices[3] - vertices[1]
-        c = vertices[4] - vertices[1]
-        det_value = dot(a, cross(b, c))
-
-        # Remove elements with near-zero volume
-        if abs(det_value) <= volume_tolerance
+        # Float signed volume, used here ONLY for the near-zero-volume MAGNITUDE test.
+        a = mesh.X[tet[2]] - mesh.X[tet[1]]
+        b = mesh.X[tet[3]] - mesh.X[tet[1]]
+        c = mesh.X[tet[4]] - mesh.X[tet[1]]
+        if abs(dot(a, cross(b, c))) <= volume_tolerance
             zero_volume_elements += 1
             continue
         end
 
-        # Fix elements with negative determinant
-        if det_value < 0
-            # Strategy 1: Swap vertices 3 and 4
-            tet_copy = copy(tet)
-            tet_copy[3], tet_copy[4] = tet_copy[4], tet_copy[3]
-
-            # Check if fix worked
-            new_vertices = SVector{4,SVector{3,Float64}}(
-                mesh.X[tet_copy[1]],
-                mesh.X[tet_copy[2]],
-                mesh.X[tet_copy[3]],
-                mesh.X[tet_copy[4]],
-            )
-            new_a = new_vertices[2] - new_vertices[1]
-            new_b = new_vertices[3] - new_vertices[1]
-            new_c = new_vertices[4] - new_vertices[1]
-            new_det = dot(new_a, cross(new_b, new_c))
-
-            if new_det > volume_tolerance
-                # Fix successful - element has positive volume and is not near-zero
-                push!(valid_elements, tet_copy)
-                fixed_elements += 1
-                continue
-            end
-
-            # Strategy 2: Swap vertices 1 and 2
-            tet_copy = copy(tet)
-            tet_copy[1], tet_copy[2] = tet_copy[2], tet_copy[1]
-
-            new_vertices = SVector{4,SVector{3,Float64}}(
-                mesh.X[tet_copy[1]],
-                mesh.X[tet_copy[2]],
-                mesh.X[tet_copy[3]],
-                mesh.X[tet_copy[4]],
-            )
-            new_a = new_vertices[2] - new_vertices[1]
-            new_b = new_vertices[3] - new_vertices[1]
-            new_c = new_vertices[4] - new_vertices[1]
-            new_det = dot(new_a, cross(new_b, new_c))
-
-            if new_det > volume_tolerance
-                push!(valid_elements, tet_copy)
-                fixed_elements += 1
-                continue
-            end
-
-            # Strategy 3: Swap vertices 2 and 3
-            tet_copy = copy(tet)
-            tet_copy[2], tet_copy[3] = tet_copy[3], tet_copy[2]
-
-            new_vertices = SVector{4,SVector{3,Float64}}(
-                mesh.X[tet_copy[1]],
-                mesh.X[tet_copy[2]],
-                mesh.X[tet_copy[3]],
-                mesh.X[tet_copy[4]],
-            )
-            new_a = new_vertices[2] - new_vertices[1]
-            new_b = new_vertices[3] - new_vertices[1]
-            new_c = new_vertices[4] - new_vertices[1]
-            new_det = dot(new_a, cross(new_b, new_c))
-
-            if new_det > volume_tolerance
-                push!(valid_elements, tet_copy)
-                fixed_elements += 1
-                continue
-            end
-
-            # All fix attempts failed
-            failed_fixes += 1
-        else
-            # Element already has positive determinant
+        # Orientation SIGN decided exactly. A non-degenerate tetrahedron is either already
+        # positively oriented, or a single vertex swap (3 <-> 4) flips it to positive: one
+        # transposition exactly negates a non-zero determinant, so the old fallback strategies
+        # (which only existed to paper over floating-point noise) are no longer needed.
+        if is_positively_oriented(mesh, tet)
             push!(valid_elements, tet)
+        else
+            tet_fixed = copy(tet)
+            tet_fixed[3], tet_fixed[4] = tet_fixed[4], tet_fixed[3]
+            if is_positively_oriented(mesh, tet_fixed)
+                push!(valid_elements, tet_fixed)
+                fixed_elements += 1
+            else
+                # Unreachable for a tet that passed the volume test above (it cannot be exactly
+                # coplanar); kept as a safety net.
+                failed_fixes += 1
+            end
         end
     end
 

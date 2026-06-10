@@ -1,4 +1,19 @@
 """
+    face_key(a::Int, b::Int, c::Int) -> NTuple{3,Int}
+
+Return the three node indices sorted ascending, as a tuple, WITHOUT allocating a temporary array.
+This is the canonical key for a triangular face (orientation-independent), identical to
+`tuple(sort([a, b, c])...)`. It runs four times per tetrahedron, twice over the whole mesh, so
+avoiding the per-call array allocation matters on large meshes.
+"""
+function face_key(a::Int, b::Int, c::Int)::NTuple{3,Int}
+    a > b && ((a, b) = (b, a))
+    b > c && ((b, c) = (c, b))
+    a > b && ((a, b) = (b, a))
+    return (a, b, c)
+end
+
+"""
     remove_isolated_components!(mesh::BlockMesh; keep_largest::Bool=true)
 
 Remove isolated tetrahedra or disconnected regions from the mesh.
@@ -36,10 +51,10 @@ function remove_isolated_components!(mesh::BlockMesh; keep_largest::Bool = true)
     @inbounds for (elem_idx, tet) in enumerate(mesh.IEN)
         # Each tetrahedron has 4 triangular faces
         faces = (
-            tuple(sort([tet[1], tet[2], tet[3]])...),  # Face opposite to node 4
-            tuple(sort([tet[1], tet[2], tet[4]])...),  # Face opposite to node 3
-            tuple(sort([tet[1], tet[3], tet[4]])...),  # Face opposite to node 2
-            tuple(sort([tet[2], tet[3], tet[4]])...),   # Face opposite to node 1
+            face_key(tet[1], tet[2], tet[3]),  # Face opposite to node 4
+            face_key(tet[1], tet[2], tet[4]),  # Face opposite to node 3
+            face_key(tet[1], tet[3], tet[4]),  # Face opposite to node 2
+            face_key(tet[2], tet[3], tet[4]),  # Face opposite to node 1
         )
 
         for face in faces
@@ -70,10 +85,10 @@ function remove_isolated_components!(mesh::BlockMesh; keep_largest::Bool = true)
             # Find neighbors through shared faces
             tet = mesh.IEN[current]
             faces = (
-                tuple(sort([tet[1], tet[2], tet[3]])...),
-                tuple(sort([tet[1], tet[2], tet[4]])...),
-                tuple(sort([tet[1], tet[3], tet[4]])...),
-                tuple(sort([tet[2], tet[3], tet[4]])...),
+                face_key(tet[1], tet[2], tet[3]),
+                face_key(tet[1], tet[2], tet[4]),
+                face_key(tet[1], tet[3], tet[4]),
+                face_key(tet[2], tet[3], tet[4]),
             )
 
             for face in faces
