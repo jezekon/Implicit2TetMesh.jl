@@ -16,3 +16,11 @@
 !data/**/*.jld2
 !data/**/*.vti
 .DS_Store
+
+# Local experiment / cross-validation scaffolding under scratch/
+# (keep only the tracked regression harness measure.jl)
+scratch/*
+!scratch/measure.jl
+
+# Reference material (quartet / isostuffer sources, papers) — read-only, not part of the package
+Literature/
