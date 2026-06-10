@@ -12,6 +12,7 @@ Implicit2TetMesh is an experimental Julia package for generating high-quality te
 
 ## Features
 - **Robust Meshing**: High-quality tetrahedral mesh generation from implicit geometries using A15 (body-centered cubic) and Schlafli (orthoscheme) discretizations
+- **Edge-based Warping**: Lattice vertices near the surface are snapped onto the linear cut points of sign-crossing edges (isosurface-stuffing warp), which collapses the sliver tetrahedra
 - **Isosurface Refinement**: Advanced boundary processing with experimental NZZZ case handling for thin features relative to characteristic element size
 - **Volume Correction**: Precise volume preservation using automatic surface node adjustment
 - **Geometric Constraints**: Bounded plane definitions for selective node alignment
@@ -40,6 +41,8 @@ generate_tetrahedral_mesh(grid_file, sdf_file, output_prefix; options=MeshGenera
 - `options::MeshGenerationOptions`: Configuration options (optional)
 #### SDF Convention:
 The package uses the standard convention `phi < 0 = inside`, `phi > 0 = outside`, `phi = 0 = on the surface`, matching the isosurface-stuffing reference implementations. Input files that store the opposite sign (positive = inside) are negated automatically when the `BlockMesh` is constructed; the data files on disk are never modified.
+#### Surface Warping:
+Before the boundary is sliced, lattice vertices close to the surface are snapped onto the **linear cut points** of their sign-crossing edges, following the isosurface-stuffing warp (Labelle 2007, §3.2). For every tetrahedron edge whose endpoints have opposite SDF signs, the surface crosses the edge at `X_i + α·(X_j − X_i)` with `α = φ_i / (φ_i − φ_j)`; if that crossing lies within a fraction `threshold` (default `0.3`) of an endpoint, the endpoint is moved onto it and marked as lying on the surface. Each vertex is warped to its closest qualifying cut point, and all displacements are computed from the original geometry and applied at once, so the result is independent of vertex order. Snapping to the *linear* cut point (rather than projecting each node to the true isosurface) is what keeps the surrounding tetrahedra well shaped and removes the slivers.
 #### Return Value:
 - `mesh::BlockMesh`: The generated tetrahedral mesh
 - **Output files**: `.vtu` mesh visualization files for Paraview

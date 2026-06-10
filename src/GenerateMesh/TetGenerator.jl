@@ -268,80 +268,93 @@ function generate_mesh!(mesh::BlockMesh, scheme::String)
 end
 
 
-# Update warp_node_to_isocontour! to handle positions directly
-function warp_node_to_isocontour!(
-    mesh::BlockMesh,
-    node_index::Int,
-    max_dist::Float64,
-    max_iter,
-)
-    tol = mesh.grid_tol
-    current_position = mesh.X[node_index]
+# ------------------------------------------------------------------
+# Edge-based warp to linear cut points (port of quartet warp_vertices)
+# ------------------------------------------------------------------
+"""
+    warp!(mesh, scheme; threshold = 0.3)
 
-    for iter = 1:max_iter
-        f = eval_sdf(mesh, current_position)
+Snap lattice vertices onto the linear cut points of incident sign-crossing edges.
 
-        # Early return if we're close enough to the isocontour
-        abs2(f) < tol * tol && break
+For every tetrahedron edge `(i, j)` whose endpoints have strictly opposite SDF signs the
+isosurface crosses the edge at the linear cut point
 
-        grad = compute_gradient(mesh, current_position)
-        norm_grad_squared = sum(abs2, grad)
+    X_cut = X_i + alpha * (X_j - X_i),   alpha = phi_i / (phi_i - phi_j)  in (0, 1).
 
-        # Early return if gradient is too small
-        norm_grad_squared < 1e-16 && break
+If that cut point is close to an endpoint (`alpha < threshold` for `i`, or
+`alpha > 1 - threshold` for `j`), the endpoint is moved onto the cut point and its stored
+SDF is set to zero, i.e. the vertex is placed exactly on the surface. Each vertex is
+warped to its CLOSEST qualifying cut point (smallest `alpha * |edge|^2`, quartet's metric).
+Displacements are computed from the original positions and SDF values and applied all at
+once, so the result does not depend on vertex order.
 
-        # Newton step
-        dp = (f / norm_grad_squared) * grad
-        current_position -= dp
-    end
+The vertex is moved to the LINEAR cut point only (no Newton projection to the true
+isosurface); keeping the move linear is what leaves the surrounding tetrahedra well shaped.
+This is a direct port of quartet's `warp_vertices` (make_tet_mesh.cpp:152-193); see
+Labelle 2007 §3.2.
 
-    norm_dist = norm(current_position .- mesh.X[node_index])
+`threshold` is quartet's warp coefficient (must lie in `[0, 0.5]`) and is exposed so later
+stages can tune it. `scheme` is kept only for call-site compatibility: the warp operates on
+`mesh.IEN` / `mesh.node_sdf` and is identical for every scheme.
+"""
+function warp!(mesh::BlockMesh, scheme::String; threshold::Float64 = 0.3)
+    @info "Warping vertices to edge cut points (threshold = $threshold)..."
+    @assert 0.0 <= threshold <= 0.5 "warp threshold must lie in [0, 0.5]"
 
-    if norm_dist <= (max_dist * 2)
-        current_sdf = eval_sdf(mesh, current_position)
-        if abs(current_sdf) < tol*4
-            mesh.node_sdf[node_index] = 0.0
-        else
-            # println("current_sdf: ", current_sdf)
-            mesh.node_sdf[node_index] = current_sdf
+    n = length(mesh.X)
+    # Best (closest) qualifying cut point found so far, per vertex.
+    best_metric = fill(Inf, n)                              # quartet's warp[] : alpha * |edge|^2
+    displacement = [zero(SVector{3,Float64}) for _ = 1:n]   # quartet's d[]    : vector onto the cut point
+    to_warp = falses(n)                                     # quartet's warp_nbr >= 0
+
+    # Visit every edge of every tetrahedron. Shared edges are visited several times,
+    # but keeping the per-vertex minimum makes the repetition harmless.
+    for tet in mesh.IEN
+        for u = 1:3
+            i = tet[u]
+            for v = (u+1):4
+                j = tet[v]
+                phi_i = mesh.node_sdf[i]
+                phi_j = mesh.node_sdf[j]
+
+                # Only strictly sign-crossing edges have an interior cut point.
+                if (phi_i < 0 && phi_j > 0) || (phi_i > 0 && phi_j < 0)
+                    # Fraction along the edge from i to the zero crossing, in (0, 1).
+                    alpha = phi_i / (phi_i - phi_j)
+                    edge2 = sum(abs2, mesh.X[j] - mesh.X[i])
+
+                    if alpha < threshold
+                        # Cut point is close to i -> warp i toward j.
+                        metric = alpha * edge2
+                        if metric < best_metric[i]
+                            best_metric[i] = metric
+                            displacement[i] = alpha * (mesh.X[j] - mesh.X[i])
+                            to_warp[i] = true
+                        end
+                    elseif alpha > 1 - threshold
+                        # Cut point is close to j -> warp j toward i.
+                        metric = (1 - alpha) * edge2
+                        if metric < best_metric[j]
+                            best_metric[j] = metric
+                            displacement[j] = (1 - alpha) * (mesh.X[i] - mesh.X[j])
+                            to_warp[j] = true
+                        end
+                    end
+                end
+            end
         end
-        mesh.X[node_index] = current_position
-    end
-end
-
-# Main function for node warping - ordered warping
-#
-# First, nodes with negative SDF value (inside the isosurface) are adjusted,
-# then nodes with positive values (outside). Processing inside nodes first preserves
-# the original warping order under the phi < 0 = inside convention.
-# Nodes are moved toward the zero level of SDF (isosurface) and the displacement threshold
-# is calculated as threshold_sdf = 0.5 * (length of the longest tetrahedral edge).
-function warp!(mesh::BlockMesh, scheme::String, max_iter::Int = 160)
-    # Calculate the longest edge and then the threshold for displacement
-    @info "Warping nodes to isocontour..."
-    if scheme == "A15"
-        threshold_sdf = 0.15 * mesh.grid_step
-    elseif scheme == "Schlafli"
-        threshold_sdf = 0.3 * mesh.grid_step
-    else
-        @error "Unknown scheme"
     end
 
-    # First pass: nodes with negative SDF value (inside)
-    for i = 1:length(mesh.X)
-        sdf = mesh.node_sdf[i]
-        if sdf < 0 && abs(sdf) < threshold_sdf
-            warp_node_to_isocontour!(mesh, i, threshold_sdf, max_iter)
+    # Apply all warps at once: move the vertex onto the surface and mark it as on it.
+    warped_count = 0
+    for v = 1:n
+        if to_warp[v]
+            mesh.X[v] = mesh.X[v] + displacement[v]
+            mesh.node_sdf[v] = 0.0
+            warped_count += 1
         end
     end
-    # Second pass: nodes with positive SDF value (outside)
-    for i = 1:length(mesh.X)
-        sdf = mesh.node_sdf[i]
-        if sdf > 0 && abs(sdf) < threshold_sdf
-            warp_node_to_isocontour!(mesh, i, threshold_sdf, max_iter)
-        end
-    end
-    #TODO:Warp only one node from element wich is close to boundary (now it warps every node which is close enough)
+    println("  Warped $warped_count vertices onto the isosurface")
 end
 
 # ---------------------------------------------------

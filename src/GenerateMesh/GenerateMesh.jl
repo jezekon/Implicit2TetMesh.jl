@@ -6,7 +6,6 @@ export generate_mesh!,
     slice_ambiguous_tetrahedra!,
     export_mesh_vtu,
     export_mesh_vtu_quality,
-    warp_node_to_isocontour!,
     remove_inverted_elements!,
     cleanup_unused_nodes!,
     create_INE!
