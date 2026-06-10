@@ -9,7 +9,14 @@
    consistent with the literature, and **end** by running regression, updating
    `README.md`, committing to `dev`, and stopping for review.
 
-**Status:** Etapa 0 (validation experiment) is complete. It proved that replacing the
+**Status (updated 2026-06-10):**
+  • Etapas 1-4 — DONE, committed on `dev` (Etapa 4 = 25c6f70, awaiting review).
+  • Volume correction — REMOVED (standalone cleanup, c224f05); the pipeline no longer has a
+    correct_mesh_volume! step, so any "compare before correct_mesh_volume!" note below is moot.
+  • Etapa 9 — only the prompt text lives in this file (12e9bc9); no code yet.
+  • NEXT coding stage: **Etapa 5** (exact predicates + perf). Etapas 6-9 are optional/later.
+
+Etapa 0 (validation experiment) is also complete. It proved that replacing the
 current Newton‑to‑isosurface warp with quartet‑style edge warping collapses the slivers
 (min dihedral 0.001°→8.19°, angles <5°: 95→0, bubbles 35→4). Its numbers are the
 baselines below.
@@ -31,19 +38,27 @@ the OPPOSITE convention (positive = inside); Etapa 1 flips it. Etapas 2+ assume 
 Pipeline (src/TetMeshGenerator.jl -> generate_tetrahedral_mesh):
   generate_mesh! -> warp! -> update_connectivity! -> slice_ambiguous_tetrahedra!
   -> update_connectivity! -> remove_inverted_elements! -> remove_isolated_components!(keep_largest)
-  -> update_connectivity! -> [optional correct_mesh_volume!]
+  -> update_connectivity!
+  (slice_ambiguous_tetrahedra! lost its 3rd arg in Etapa 3; the optional correct_mesh_volume! tail
+   was removed with volume correction — there is no post-meshing node-mover anymore.)
 
-Key files:
-  src/GenerateMesh/TetGenerator.jl    — A15 fill (process_cell_A15!), warp! (:316), connectivity helpers
-  src/GenerateMesh/Stencils.jl        — slice_ambiguous_tetrahedra! (:15), apply_stencil_trim_spikes! (:389,
-                                        cases :505-646, inline ZZZZ :457-468, experimental NZZZ :506-537,
-                                        process_nzzz_case! :294-380), cut_edge! :113, orientation :168-209
-  src/GenerateMesh/NewCases-Experimental.jl — create_warping_params (:54), compute_dihedral_angle_range (:80)
-  src/GenerateMesh/Schemes/A15Scheme.jl — A15 tile (tile_ref, tetra_connectivity)
-  src/Fundamentals/BlockMesh.jl       — struct (X, IEN, INE, SDF, node_sdf, node_hash, grid_step, grid_tol)
-  src/Fundamentals/SDFOperations.jl   — eval_sdf (:24), compute_gradient (:89)
-  src/Modification/RemoveIsolatedComponents.jl — face->elements map pattern (:31-49)  [reuse for adjacency]
-  src/Modification/ModifyResultingMesh.jl      — boundary-face extraction, count==1 (:122-151)
+Key files (line numbers as of 2026-06-10, post-Etapa-4 + volume removal; re-grep if they drift):
+  src/GenerateMesh/TetGenerator.jl    — process_cell_A15! (:11), generate_mesh! (:194), warp! (:250),
+                                        connectivity: merge_duplicate_nodes! (:120), cleanup_unused_nodes!
+                                        (:153), create_INE! (:181), update_connectivity! (:313)
+  src/GenerateMesh/Stencils.jl        — slice_ambiguous_tetrahedra! (:21), cut_edge! (:69),
+                                        apply_stencil_trim_spikes! (:179, trim cases :311-396, all-on-surface
+                                        Case 3 deferred :202), Labelle §3.4 surface-candidate decision incl.
+                                        centroid test (:436-512), orientation check_tetrahedron_orientation
+                                        (:124) / fix_tetrahedron_orientation! (:152), remove_inverted_elements!
+                                        (:539).  [experimental NZZZ / process_nzzz_case! / Schläfli: removed in Etapa 3]
+  src/GenerateMesh/NewCases-Experimental.jl — create_warping_params (:54), compute_dihedral_angle_range (:76)
+  src/GenerateMesh/Schemes/A15Scheme.jl — A15 tile: tile_ref (:3), tetra_connectivity (:35)
+  src/Fundamentals/BlockMesh.jl       — mutable struct (:4) (X, IEN, INE, SDF, node_sdf, node_hash, grid_step, grid_tol)
+  src/Fundamentals/SDFOperations.jl   — get_cell_sdf_values (:4), eval_sdf (:24), compute_gradient (:89/:108)
+  src/Modification/RemoveIsolatedComponents.jl — face->elements map pattern (:34-49)  [reuse for adjacency]
+  src/Modification/ModifyResultingMesh.jl      — find_surface_nodes (:123), surface_faces count==1 (:146),
+                                                 is_on_plane (:2)
 
 Reference materials (read the relevant parts per stage):
   Literature/quartet-original/src/make_tet_mesh.cpp — THE A15 reference (Bridson & Doran):
@@ -123,6 +138,10 @@ BASELINE (beam, A15):
   • Etapa-0 edge-warp prototype:     tets 92,675 | min 8.19° | <5° 0  | <10° 23  | >140° 273 | isolated 4  | inverted 0
 Etapa 1 must reproduce the "current repo" numbers EXACTLY (output-preserving). Etapa 2 should reach
 ≈the edge-warp prototype. Etapas 3-4 should improve it further. Always also run gripper.
+
+CURRENT HEAD of dev (after Etapa 4 + volume removal — the numbers Etapa 5 must preserve):
+  • beam:    tets 92,532    | min 11.276° | <10° 0  | >140° 81   | inverted 0
+  • gripper: tets 1,984,316 | min 9.537°  | <10° 11 | >140° 1136 | inverted 0
 ````
 
 ---
@@ -144,7 +163,8 @@ SCOPE / LIMITS (be explicit about these in any report):
     an unstructured HEX8 field, so for Etapa 8's unstructured inputs there is NO quartet oracle —
     the only check there is the quality histogram (see Etapa 8).
   • Run quartet with optimize=false (we have no optimization pass) and without feature matching.
-  • Compare our mesh BEFORE correct_mesh_volume! (quartet has no volume correction).
+  • Compare our FINAL mesh: volume correction was REMOVED, so there is no correct_mesh_volume!
+    step to exclude any more (quartet likewise has none).
   • Do NOT expect vertex-by-vertex / connectivity identity: quartet sizes its grid and enumerates
     A15 tiles its own way. The right altitude is aggregate metrics + boundary-surface distance.
   • isostuffer is BCC + graded octree — a different lattice; it is NOT comparable to the A15
@@ -184,7 +204,7 @@ the owner, freeze ITS histogram/quality metrics as the automated regression base
 
 ---
 
-## Etapa 1 — Adopt the standard sign convention: phi < 0 = inside
+## Etapa 1 — Adopt the standard sign convention: phi < 0 = inside  ✅ DONE
 
 ````text
 ETAPA 1 — Flip the project to phi < 0 = INSIDE (output-preserving refactor)
@@ -224,7 +244,7 @@ update the convention description).
 
 ---
 
-## Etapa 2 — Warp realignment (edge-based warp to cut points)
+## Etapa 2 — Warp realignment (edge-based warp to cut points)  ✅ DONE
 
 ````text
 ETAPA 2 — Replace warp! with an edge-based warp to cut points (port of quartet warp_vertices)
@@ -262,7 +282,7 @@ CLOSEOUT (README: describe the new warping step).
 
 ---
 
-## Etapa 3 — Trim/stencil alignment with quartet + remove Schläfli
+## Etapa 3 — Trim/stencil alignment with quartet + remove Schläfli  ✅ DONE
 
 ````text
 ETAPA 3 — Align slicing 1:1 with quartet trim_spikes; remove the experimental and Schläfli paths
@@ -302,7 +322,7 @@ CLOSEOUT (README: remove Schläfli and experimental_nzzz from the documented opt
 
 ---
 
-## Etapa 4 — Quadruple-zero / bubble prevention (Labelle §3.4)
+## Etapa 4 — Quadruple-zero / bubble prevention (Labelle §3.4)  ✅ DONE (awaiting review)
 
 ````text
 ETAPA 4 — Principled boundary handling per Labelle §3.4 (depends on Etapas 2-3)
@@ -344,7 +364,7 @@ CLOSEOUT (README: describe the boundary handling).
 
 ---
 
-## Etapa 5 — Exact predicates + performance
+## Etapa 5 — Exact predicates + performance  ⏭️ NEXT
 
 ````text
 ETAPA 5 — Robust geometric predicates + speed (depends on Etapas 2-4)
@@ -352,24 +372,40 @@ ETAPA 5 — Robust geometric predicates + speed (depends on Etapas 2-4)
 GOAL: Base orientation/inversion decisions on EXACT predicates (no tolerance guessing) and remove
 redundant work.
 
-BEFORE STARTING: follow the common-context checklist. Read the current float tests —
-check_tetrahedron_orientation / fix_tetrahedron_orientation! (Stencils.jl:168-209, using
-dot(a,cross(b,c)) > 1e-12) and remove_inverted_elements! (:666-794). quartet uses Shewchuk's exact
-predicates (predicates.cpp).
+CURRENT STATE (verified 2026-06-10): Etapas 1-4 + volume removal are on dev, tree clean.
+ExactPredicates is ALREADY resolved in Manifest.toml (transitive), but NOT in Project.toml [deps] —
+add it as a DIRECT dependency.
+
+BEFORE STARTING: follow the common-context checklist. Read the current float tests (all in
+src/GenerateMesh/Stencils.jl): check_tetrahedron_orientation (:124, returns
+dot(a,cross(b,c)) > 1e-12 at :143), fix_tetrahedron_orientation! (:152), the inline orientation
+check inside the slice (:488), and remove_inverted_elements! (:539, its own det computations at
+:570/:594/:616/:637). quartet uses Shewchuk's exact predicates (predicates.cpp).
 
 TASKS:
-  1. Add ExactPredicates.jl to Project.toml. VERIFY its 3D orientation API (e.g. orient(a,b,c,d)
-     returning -1/0/1) and replace the float SIGN tests for orientation/inversion with it. Keep a
-     tiny tolerance ONLY for near-zero-volume degeneracy removal, but decide the SIGN exactly.
-  2. Performance: the pipeline calls update_connectivity! 3x (each = cleanup_unused_nodes! +
-     merge_duplicate_nodes! + create_INE!). Identify which rebuilds are actually required and
+  1. Add ExactPredicates to Project.toml [deps] (it is already resolved in the Manifest). VERIFY
+     its 3D orientation API (e.g. orient(a,b,c,d) returning -1/0/1), confirm the sign convention
+     matches the current code (positive determinant = correct orientation), and replace the float
+     SIGN tests for orientation/inversion with it. UNIFY: make ONE exact helper (e.g.
+     is_positively_oriented(mesh, tet)) and call it from ALL the sites above, so the sign decision
+     is not duplicated across five places. Keep a tiny tolerance ONLY for near-zero-volume
+     degeneracy removal, but decide the SIGN exactly.
+  2. Performance: the pipeline calls update_connectivity! 3x (TetGenerator.jl:313 =
+     cleanup_unused_nodes!(:153) + merge_duplicate_nodes!(:120) + create_INE!(:181); pipeline call
+     sites TetMeshGenerator.jl:81/:85/:90). Identify which rebuilds are actually required and
      collapse the rest. Reduce repeated eval_sdf where node_sdf is already cached. Time mesh
      generation on gripper (@time / a simple timer) before & after; report the speedup.
   3. Guarantee 0 inverted tets via the exact predicate (not tolerance).
   Keep wrappers small and readable (CODE STYLE); the maintainer should follow how the predicate is called.
+  Common-context seam reminder (Etapa 8): do NOT add new direct mesh.SDF reads — access the field
+  only via eval_sdf / get_cell_sdf_values / node_sdf.
 
-VERIFY: harness on beam + gripper — numbers match Etapa 4 within rounding; inverted = 0 exactly.
-Report timing before/after. CLOSEOUT (README: note exact predicates + any new dependency).
+VERIFY: scratch/measure.jl on beam + gripper — numbers must match the CURRENT HEAD baseline within
+rounding, inverted = 0 EXACTLY:
+    beam:    tets 92,532    | min 11.276° | <10° 0  | >140° 81   | inverted 0
+    gripper: tets 1,984,316 | min 9.537°  | <10° 11 | >140° 1136 | inverted 0
+Also run: cd test && julia --project=.. runtests.jl. Report timing before/after.
+CLOSEOUT (README: note exact predicates + the new ExactPredicates dependency).
 ````
 
 ---
@@ -457,8 +493,10 @@ stuffing); only the SDF SOURCE becomes pluggable.
 
 WHY THIS WORKS (state these checks in the opening report):
   • The entire pipeline consumes the field through ONE function (eval_sdf) plus the cached
-    node_sdf, so the seam is already narrow (verified: TetGenerator :86/:103, Stencils :78/:93,
-    CorrectMeshVolume :62; the only other access is get_cell_sdf_values for cell skip tests).
+    node_sdf, so the seam is already narrow (verified 2026-06-10: TetGenerator :86/:103, Stencils
+    centroid test :512; the only other access is get_cell_sdf_values for cell skip tests at
+    TetGenerator :15/:46. NOTE: CorrectMeshVolume was deleted with volume correction, so it is no
+    longer an eval_sdf call site).
   • HEX8 trilinear shape functions give a C0-continuous field on a CONFORMING mesh (the
     restriction to a shared face depends only on the 4 face nodes), so the zero isosurface is
     crack-free. Per-element interpolation without shared-face consistency would not be
@@ -496,8 +534,8 @@ IMPLEMENT:
   • Outside-domain rule for unstructured sources: lattice points outside the hex mesh get a
     positive (outside) value (closest-element extrapolation or clamp). When the input is a
     design-domain box (the SIMP case), only the padding ring is affected.
-  • Volume reference (CorrectMeshVolume/CalcVolumeFromSDF): dispatch per source — current code
-    for structured; Gauss quadrature over hex elements with FE interpolation for unstructured.
+  • Volume reference (CalcVolumeFromSDF — CorrectMeshVolume is gone): dispatch per source — current
+    code for structured; Gauss quadrature over hex elements with FE interpolation for unstructured.
   • Clear explicit loops + English comments (CODE STYLE); the inverse mapping and the spatial
     hash deserve short explanatory docstrings.
 
