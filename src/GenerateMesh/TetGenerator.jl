@@ -205,7 +205,10 @@ function generate_mesh!(mesh::BlockMesh, scheme::String)
     end
 
     cleanup_unused_nodes!(mesh)
-    create_INE!(mesh)
+    # INE (inverse node-to-element connectivity) is NOT built here: warp! and the first
+    # update_connectivity! run before anything reads it, and every later topology change would
+    # invalidate it anyway. It is built once, by the final update_connectivity! (see
+    # generate_tetrahedral_mesh).
 end
 
 
@@ -299,10 +302,21 @@ function warp!(mesh::BlockMesh, scheme::String; threshold::Float64 = 0.3)
 end
 
 # ---------------------------------------------------
-# Function: Update mesh topology (mesh.X, mesh.IEN, mesh.INE)
+# Function: Update mesh topology (mesh.X, mesh.IEN, and optionally mesh.INE)
 # ---------------------------------------------------
-function update_connectivity!(mesh::BlockMesh)
+"""
+    update_connectivity!(mesh::BlockMesh; build_ine::Bool = true)
+
+Refresh the mesh connectivity after a topology change: compact unused nodes, merge duplicate
+nodes, and (by default) rebuild the inverse node-to-element connectivity `mesh.INE`.
+
+`build_ine` lets a caller skip the `mesh.INE` rebuild when the inverse connectivity is not needed
+yet. Nothing in the generation pipeline reads `INE`, and every topology step would invalidate it,
+so the core pipeline rebuilds it only once -- on the final call -- and passes `build_ine = false`
+on the earlier calls. The default `true` preserves the original behaviour for every other caller.
+"""
+function update_connectivity!(mesh::BlockMesh; build_ine::Bool = true)
     cleanup_unused_nodes!(mesh)        # Recalculates mesh.X, mesh.node_sdf and reindexes mesh.IEN and mesh.node_map
     merge_duplicate_nodes!(mesh)       # Merges duplicate nodes and adjusts connectivity in mesh.IEN
-    create_INE!(mesh)                  # Creates inverse connectivity (mesh.INE)
+    build_ine && create_INE!(mesh)     # Inverse connectivity (mesh.INE); skipped when not needed yet
 end

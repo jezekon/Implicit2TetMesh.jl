@@ -609,8 +609,10 @@ This function:
    The orientation SIGN is decided EXACTLY by `is_positively_oriented` (no tolerance).
 2. Removes elements with near-zero volume (degenerate elements). This is the only place a
    tolerance is kept, and it gates the volume MAGNITUDE, not the sign.
-3. Rebuilds the inverse node-to-element connectivity (INE). Orphaned nodes left by removed
-   elements are compacted later by `update_connectivity!`.
+3. Leaves only the valid elements in `mesh.IEN`. It does NOT rebuild the inverse connectivity
+   (INE) or compact orphaned nodes -- the caller refreshes connectivity right after (the pipeline
+   and the test via `update_connectivity!`, `warp_mesh_by_planes_sdf!` via its own `create_INE!`),
+   so rebuilding INE here would only be thrown away.
 
 Returns the modified mesh.
 """
@@ -665,11 +667,11 @@ function remove_inverted_elements!(mesh::BlockMesh)
         end
     end
 
-    # Update connectivity
+    # Keep only the valid elements. INE is intentionally NOT rebuilt here (see the docstring):
+    # every caller refreshes connectivity right after, so a rebuild now would be discarded.
     mesh.IEN = valid_elements
-    create_INE!(mesh)                  # Creates inverse connectivity (mesh.INE)
 
-    # Report statistics before connectivity update
+    # Report statistics
     println("  Fixed orientation of $fixed_elements inverted elements")
     if failed_fixes != 0
         println(

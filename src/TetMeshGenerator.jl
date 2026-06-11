@@ -78,16 +78,16 @@ function generate_tetrahedral_mesh(
 
     # Warp nodes to isosurface (SDF = 0 level set)
     warp!(mesh, options.scheme)
-    update_connectivity!(mesh)
+    update_connectivity!(mesh; build_ine = false)   # INE not needed until the mesh is final
 
     # Process isosurface boundary - remove exterior elements
     slice_ambiguous_tetrahedra!(mesh, options.scheme)
-    update_connectivity!(mesh)
+    update_connectivity!(mesh; build_ine = false)
     remove_inverted_elements!(mesh)
 
     # Remove disconnected/isolated mesh components
     remove_isolated_components!(mesh, keep_largest = true)
-    update_connectivity!(mesh)
+    update_connectivity!(mesh)                       # final refresh: builds mesh.INE once
 
     # Display volume statistics
     @info "Computing mesh volumes..."
