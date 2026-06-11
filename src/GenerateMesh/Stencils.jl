@@ -32,10 +32,7 @@ function slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String)
     # First pass: trim every tetrahedron. Crossing and fully-interior tets are emitted straight
     # into the solid mesh; all-on-surface ("quadruple-zero") tets are collected as candidates.
     for tet in current_IEN
-        resulting_tets = apply_stencil_trim_spikes!(mesh, tet, cut_map, surface_candidates)
-        for nt in resulting_tets
-            push!(solid_tets, nt)
-        end
+        apply_stencil_trim_spikes!(mesh, tet, cut_map, solid_tets, surface_candidates)
     end
 
     # Second pass: decide which deferred surface-only tets to keep (Labelle §3.4 heuristic).
@@ -135,6 +132,34 @@ function is_positively_oriented(mesh::BlockMesh, tet)::Bool
 end
 
 """
+    four_distinct(a, b, c, d) -> Bool
+
+True iff the four node indices are pairwise distinct, i.e. the tetrahedron is non-degenerate.
+Equivalent to `length(Set((a, b, c, d))) == 4` but without allocating a `Set` -- this runs once
+per emitted/checked tetrahedron, so it is kept allocation-free.
+"""
+function four_distinct(a::Int, b::Int, c::Int, d::Int)::Bool
+    return a != b && a != c && a != d && b != c && b != d && c != d
+end
+
+"""
+    vert_greater(vert_data, i, j) -> Bool
+
+Strict ordering used to sort a crossing tetrahedron's vertices, matching quartet `trim_spikes`:
+descending by SDF, with ties broken so the LARGER original node index is treated as the
+more-outside vertex (the same direction quartet uses when it swaps on `index <`). Because this is
+a global total order on (SDF, index), face-adjacent tetrahedra sort a shared quad identically and
+therefore split it along the same diagonal -- this is what keeps the boundary watertight.
+
+`vert_data` is the tuple of `(sdf, node-index)` pairs; passing it as an argument keeps this a plain
+function so the sort below needs no per-tetrahedron closure allocation.
+"""
+function vert_greater(vert_data, i::Int, j::Int)::Bool
+    return (vert_data[i][1] > vert_data[j][1]) ||
+           (vert_data[i][1] == vert_data[j][1] && vert_data[i][2] > vert_data[j][2])
+end
+
+"""
     check_tetrahedron_orientation(mesh::BlockMesh, tet::Vector{Int})
 
 Check if a tetrahedron has positive orientation (positive Jacobian determinant).
@@ -173,12 +198,13 @@ function fix_tetrahedron_orientation!(mesh::BlockMesh, tet::Vector{Int})
 end
 
 """
-    apply_stencil_trim_spikes!(mesh, tet, cut_map, surface_candidates)
+    apply_stencil_trim_spikes!(mesh, tet, cut_map, solid_tets, surface_candidates)
 
 Apply the trimming algorithm to a single tetrahedron that crosses the isosurface.
-Returns new tetrahedra that accurately represent the interior region (SDF <= 0).
-The SDF sign pattern is classified case-by-case, ported 1:1 from quartet `trim_spikes`
-(make_tet_mesh.cpp:221-346).
+The trimmed interior tetrahedra (SDF <= 0) are pushed straight into `solid_tets`; there is no
+per-tetrahedron return array (this function runs once for every tetrahedron in the mesh, so
+avoiding that allocation matters). The SDF sign pattern is classified case-by-case, ported 1:1
+from quartet `trim_spikes` (make_tet_mesh.cpp:221-346).
 
 A "quadruple-zero" tetrahedron (all four vertices on the surface) is NOT decided here: it is
 appended to `surface_candidates` and resolved later by `resolve_surface_candidates!` (Labelle
@@ -188,76 +214,78 @@ function apply_stencil_trim_spikes!(
     mesh::BlockMesh,
     tet::Vector{Int64},
     cut_map::Dict{Tuple{Int,Int},Int},
+    solid_tets::Vector{Vector{Int64}},
     surface_candidates::Vector{Vector{Int64}},
-)::Vector{Vector{Int64}}
-
-    # Get SDF values for tetrahedron nodes
-    node_indices = tet
-    node_sdf = [mesh.node_sdf[idx] for idx in node_indices]
+)
+    # SDF value at each of the four nodes. Read as scalars (no per-tet temporary array): the fast
+    # paths below run for EVERY tetrahedron, and the vast majority are fully interior, so a
+    # temporary here would dominate the slicing cost.
     tol = mesh.grid_tol
+    s1 = mesh.node_sdf[tet[1]]
+    s2 = mesh.node_sdf[tet[2]]
+    s3 = mesh.node_sdf[tet[3]]
+    s4 = mesh.node_sdf[tet[4]]
 
     # --- Special cases handling ---
     # Case 1: All nodes outside (SDF > tol) - discard tetrahedron (all-outside case)
-    if all(s -> s > tol, node_sdf)
-        return Vector{Vector{Int64}}()
+    if s1 > tol && s2 > tol && s3 > tol && s4 > tol
+        return
     end
 
     # Case 2: All nodes inside (SDF < -tol) - keep original (all-inside case)
-    if all(s -> s < -tol, node_sdf)
-        return [tet]
+    if s1 < -tol && s2 < -tol && s3 < -tol && s4 < -tol
+        push!(solid_tets, tet)
+        return
     end
 
     # Case 3: All nodes on the surface (|SDF| <= tol) - "quadruple-zero" tetrahedron. Its fate is
     # ambiguous (Labelle §3.4) and depends on the surrounding solid mesh, so defer it: collect it
     # as a candidate and emit nothing now. resolve_surface_candidates! decides it afterwards.
-    if all(s -> abs(s) <= tol, node_sdf)
+    if abs(s1) <= tol && abs(s2) <= tol && abs(s3) <= tol && abs(s4) <= tol
         push!(surface_candidates, tet)
-        return Vector{Vector{Int64}}()
+        return
     end
 
     # --- General case: Tetrahedron crossing the isosurface ---
-    # Sort vertices by SDF value (largest first, i.e. most-outside vertex first)
-    vert_data = [(node_sdf[i], node_indices[i]) for i = 1:4]
-    p = [1, 2, 3, 4]
+    # Sort vertices by SDF value (largest first, i.e. most-outside vertex first). vert_data is a
+    # tuple of (sdf, node-index) pairs, so the sort below indexes it without allocating.
+    vert_data = ((s1, tet[1]), (s2, tet[2]), (s3, tet[3]), (s4, tet[4]))
+    p = MVector(1, 2, 3, 4)   # mutable permutation, stack-allocated (no per-tet heap allocation)
     flipped = false
 
-    # Comparison function for consistent vertex ordering, matching quartet trim_spikes.
-    # Descending by SDF; ties are broken so the LARGER original node index is treated as the
-    # more-outside vertex (the same direction quartet uses when it swaps on `index <`). Because
-    # this is a global total order on (SDF, index), face-adjacent tetrahedra sort a shared quad
-    # identically and therefore split it along the same diagonal -- this is what keeps the
-    # boundary watertight.
-    less_than(idx1, idx2) =
-        (vert_data[idx1][1] > vert_data[idx2][1]) || (
-            vert_data[idx1][1] == vert_data[idx2][1] &&
-            vert_data[idx1][2] > vert_data[idx2][2]
-        )
-
-    # Sort vertices while tracking orientation flips
-    if less_than(p[2], p[1])
-        p[1], p[2] = p[2], p[1];
+    # Sort the four vertices into descending (SDF, index) order with vert_greater, tracking
+    # orientation flips. (See vert_greater for the tie-break that keeps the boundary watertight.)
+    if vert_greater(vert_data, p[2], p[1])
+        p[1], p[2] = p[2], p[1]
         flipped = !flipped
     end
-    if less_than(p[4], p[3])
-        p[3], p[4] = p[4], p[3];
+    if vert_greater(vert_data, p[4], p[3])
+        p[3], p[4] = p[4], p[3]
         flipped = !flipped
     end
-    if less_than(p[3], p[1])
-        p[1], p[3] = p[3], p[1];
+    if vert_greater(vert_data, p[3], p[1])
+        p[1], p[3] = p[3], p[1]
         flipped = !flipped
     end
-    if less_than(p[4], p[2])
-        p[2], p[4] = p[4], p[2];
+    if vert_greater(vert_data, p[4], p[2])
+        p[2], p[4] = p[4], p[2]
         flipped = !flipped
     end
-    if less_than(p[3], p[2])
-        p[2], p[3] = p[3], p[2];
+    if vert_greater(vert_data, p[3], p[2])
+        p[2], p[3] = p[3], p[2]
         flipped = !flipped
     end
 
-    # Sorted vertices (s has highest SDF = most outside, p has lowest = most inside)
-    s_idx, r_idx, q_idx, p_idx = [vert_data[pi][2] for pi in p]
-    sdf_s, sdf_r, sdf_q, sdf_p = [vert_data[pi][1] for pi in p]
+    # Sorted vertices (s has highest SDF = most outside, p has lowest = most inside).
+    # Index the tuple directly instead of building temporary arrays.
+    s_idx = vert_data[p[1]][2]
+    r_idx = vert_data[p[2]][2]
+    q_idx = vert_data[p[3]][2]
+    p_idx = vert_data[p[4]][2]
+    sdf_s = vert_data[p[1]][1]
+    sdf_r = vert_data[p[2]][1]
+    sdf_q = vert_data[p[3]][1]
+    sdf_p = vert_data[p[4]][1]
 
     # Check if SDF values are properly sorted (descending)
     if !(sdf_s >= sdf_r >= sdf_q >= sdf_p)
@@ -286,22 +314,20 @@ function apply_stencil_trim_spikes!(
     is_q_surface = abs(sdf_q) <= tol
     is_p_surface = abs(sdf_p) <= tol
 
-    new_tets = Vector{Vector{Int64}}()
-
-    # Helper function to add tetrahedron with orientation check
+    # Helper: emit a trimmed tetrahedron straight into the solid mesh, with an orientation check.
     function add_tet!(t::Vector{Int})
         # Skip degenerate cases (duplicate vertices)
-        if length(Set(t)) != 4
+        if !four_distinct(t[1], t[2], t[3], t[4])
             return
         end
 
-        # Fix orientation and add to result
+        # Fix orientation and emit
         fix_tetrahedron_orientation!(mesh, t)
         if !check_tetrahedron_orientation(mesh, t)
             @warn "Tetrahedron $t still has incorrect orientation after fix. Skipping."
             return
         end
-        push!(new_tets, t)
+        push!(solid_tets, t)
     end
 
     # --- Case analysis based on SDF sign patterns --- (S >= R >= Q >= P)
@@ -309,12 +335,13 @@ function apply_stencil_trim_spikes!(
     # Entirely outside or on the surface (quartet's vphi[s]==0 branch: +++0 / ++00 / +000).
     # The most-inside vertex is already on the surface, so no interior region remains -> discard.
     if is_p_surface
-        return Vector{Vector{Int64}}()
+        return
 
         # Surface/interior tetrahedron with no outside vertex: ZZZP, ZZPP, ZPPP. quartet leaves
         # these untouched (all phi <= 0), so we keep them as-is.
     elseif is_s_surface && !is_r_outside && !is_q_outside && is_p_inside
-        return [tet]
+        push!(solid_tets, tet)
+        return
 
         # Case NNNP (quartet +++-): three nodes outside, one inside
     elseif is_s_outside && is_r_outside && is_q_outside && is_p_inside
@@ -351,7 +378,7 @@ function apply_stencil_trim_spikes!(
             end
         else
             @warn "Logic error in NPPP branch: r=$sdf_r, q=$sdf_q, p=$sdf_p"
-            return Vector{Vector{Int64}}()
+            return
         end
 
         # Case NNPP (quartet ++--): two nodes outside, two inside
@@ -415,10 +442,10 @@ function apply_stencil_trim_spikes!(
 
     else
         @warn "Unexpected SDF pattern in apply_stencil_trim_spikes!: s=$sdf_s, r=$sdf_r, q=$sdf_q, p=$sdf_p. Indices: s=$s_idx, r=$r_idx, q=$q_idx, p=$p_idx. Tet: $tet. Flipped: $flipped"
-        return Vector{Vector{Int64}}() # Discard in case of unexpected pattern
+        return # Discard in case of unexpected pattern
     end
 
-    return new_tets
+    return
 end
 
 """
@@ -562,7 +589,7 @@ function remove_inverted_elements!(mesh::BlockMesh)
 
     for tet in mesh.IEN
         # Skip degenerate elements with duplicate vertices
-        if length(Set(tet)) != 4
+        if !four_distinct(tet[1], tet[2], tet[3], tet[4])
             zero_volume_elements += 1
             continue
         end
