@@ -17,6 +17,9 @@
 !data/**/*.vti
 .DS_Store
 
+# Test suite VTU artifacts (per-stage diagnostics + pipeline exports)
+test/output/
+
 # Local experiment / cross-validation scaffolding under scratch/
 # (keep only the tracked regression harness measure.jl)
 scratch/*

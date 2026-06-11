@@ -38,7 +38,7 @@ plane_definitions = [
 # 5. Apply boundary plane constraints
 # 6. Export mesh to VTU format for visualization
 
-const DATA_DIR = "data/beam"
+const DATA_DIR = joinpath(@__DIR__, "..", "data", "beam")
 grid_file = joinpath(DATA_DIR, "Z_beam_HEX8_FineGrid_B-1.0_smooth-1.jld2")
 sdf_file = joinpath(DATA_DIR, "Z_beam_HEX8_FineSDF_B-1.0_smooth-1.jld2")
 

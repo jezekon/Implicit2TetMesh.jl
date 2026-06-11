@@ -1,6 +1,6 @@
 # Implicit2TetMesh.jl
 
-Implicit2TetMesh is an experimental Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs), inspired by [isosurface stuffing algorithm](https://dl.acm.org/doi/10.1145/1276377.1276448). Implementation details are provided in the documentation below. For practical usage examples, see [`test/Examples/`](test/Examples/).
+Implicit2TetMesh is an experimental Julia package for generating high-quality tetrahedral meshes from implicit geometries defined by Signed Distance Functions (SDFs), inspired by [isosurface stuffing algorithm](https://dl.acm.org/doi/10.1145/1276377.1276448). Implementation details are provided in the documentation below. For practical usage examples, see [`examples/`](examples/).
 
 <!-- <div style="display: flex; justify-content: center; align-items: center; gap: 10px;">
   <img src="doc/beam.png" style="height: 270px; max-width: 50%;" alt="Original beam geometry" />
@@ -91,14 +91,36 @@ mesh = generate_tetrahedral_mesh(
 )
 ```
 ### Advanced Usage Examples
-For complete examples with detailed documentation, see [`test/Examples/`](test/Examples/):
+For complete examples with detailed documentation, see [`examples/`](examples/):
 ```julia
 # Run beam example
-julia --project=. test/Examples/beam.jl
+julia --project=. examples/beam.jl
 
-julia --project=. test/Examples/gripper.jl
+julia --project=. examples/gripper.jl
 ```
 ___
+## Testing
+The test suite is assertion-based. It combines **invariant** tests — properties every correct
+output must satisfy (watertight boundary, no inverted elements, a single connected component,
+node-SDF consistency, positive element volumes) — with **baseline** (regression) tests that pin
+exact node/tet counts and the dihedral-angle histogram. The pipeline is deterministic, so the
+frozen baselines in `test/helpers/baselines.jl` are an exact, sharp check; an intentional pipeline
+change re-freezes that single file.
+
+```bash
+# Default run (beam geometry; the fast path)
+julia --project=. -e 'using Pkg; Pkg.test()'
+
+# Opt in to the large gripper geometry (slow)
+I2TM_TEST_GRIPPER=1 julia --project=. -e 'using Pkg; Pkg.test()'
+```
+
+A per-stage beam diagnostic (`test/test_beam_stages.jl`, also runnable standalone with
+`julia --project=. test/test_beam_stages.jl`) exports the mesh to a VTU after every pipeline phase,
+so a broken stage is named by the failing assertion and can be inspected in ParaView. All test VTU
+artifacts are written to `test/output/` (git-ignored). Shared check helpers and the frozen
+baselines live under `test/helpers/`.
+
 ## TODO List
 - [x] Principled surface-tetrahedron (quadruple-zero) handling per Labelle §3.4
 - [ ] Optional adaptive refinement for thin features (sub-lattice-thickness walls)

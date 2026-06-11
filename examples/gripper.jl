@@ -43,7 +43,7 @@ plane_definitions = [
 # 5. Apply boundary plane constraints
 # 6. Export mesh to VTU format for visualization
 
-const DATA_DIR = "data/gripper"
+const DATA_DIR = joinpath(@__DIR__, "..", "data", "gripper")
 grid_file = joinpath(DATA_DIR, "Z_robot_gripper_HEX8_FineGrid_B-2.0085_smooth-1.jld2")
 sdf_file = joinpath(DATA_DIR, "Z_robot_gripper_HEX8_FineSDF_B-2.0085_smooth-1.jld2")
 
