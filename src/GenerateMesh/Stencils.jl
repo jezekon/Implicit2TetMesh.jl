@@ -541,11 +541,11 @@ function resolve_surface_candidates!(
     retained = Vector{Vector{Int64}}()
     isempty(candidates) && return retained
 
-    # Dihedral-angle bounds. A quadruple-zero tet has all four vertices warped, so we use the
-    # stricter NNZZ bounds from create_warping_params (currently 10 deg .. 140 deg).
-    params = create_warping_params(scheme, mesh.grid_step)
-    min_bound = params.nnzz.min_dihedral_angle
-    max_bound = params.nnzz.max_dihedral_angle
+    # Dihedral-angle bounds (Labelle §3.4): a quadruple-zero tet has all four vertices warped, so
+    # reject it if any interior dihedral falls outside the accepted range (currently 10 .. 140 deg).
+    bounds = create_warping_params(scheme)
+    min_bound = bounds.min_dihedral_angle
+    max_bound = bounds.max_dihedral_angle
 
     # (1) Apply the cheap, adjacency-INDEPENDENT filter first: drop inverted or too-flat
     # candidates, exactly as before. The raw A15 lattice tet is positively oriented and the

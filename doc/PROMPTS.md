@@ -10,11 +10,23 @@
    `README.md`, committing to `dev`, and stopping for review.
 
 **Status (updated 2026-06-11):**
-  • Etapas 1-5 — DONE, committed on `dev` (Etapa 4 = 25c6f70, Etapa 5 = 0bc8409; awaiting review).
-  • Volume correction — REMOVED (standalone cleanup, c224f05); the pipeline no longer has a
-    correct_mesh_volume! step, so any "compare before correct_mesh_volume!" note below is moot.
+  • Etapas 1-5 — DONE, committed on `dev` (Etapa 4 = 25c6f70, Etapa 5 = 0bc8409). Conformance to the
+    published quartet/Labelle algorithm verified (audit Part A); considered reviewed.
+  • Post-audit performance cleanups (audit Part C) — DONE: slice/trim allocation cuts (95871b7),
+    candidate-only face map C1+C2 (96804f8), build INE once C3 (ce38be4). Gripper ≈14.5s → ≈6.0s.
+  • Test suite overhaul — DONE (a13232f): `Pkg.test()` is the real gate now (64/64) — invariants +
+    frozen baselines + per-stage beam VTU diagnostics; examples moved to top-level examples/.
+  • cut_points = :bisection — DONE (0af0d3b): optional L&S §3.1 edge-bisection mode for non-distance
+    (smoothed) SDF inputs; default stays :linear (quartet-faithful).
+  • Volume correction — REMOVED (c224f05); the pipeline has no correct_mesh_volume! step, so any
+    "compare before correct_mesh_volume!" note below is moot.
   • Etapa 9 — only the prompt text lives in this file (12e9bc9); no code yet.
-  • NEXT coding stage: **Etapa 6** (optional adaptive octree sizing; start of Phase 2).
+  • CURRENT FOCUS: **Stabilization / review** before Phase 2 — close the audit's Part B (dead code,
+    never executed; only Part C was). Confirmed candidates: orphan src/Fundamentals/Hex8_shape.jl
+    (not include-d, shape_functions unreferenced); compute_gradient (Newton-warp leftover, no caller,
+    still exported in Fundamentals.jl); over-structured CaseParams (only nnzz dihedral bounds are read,
+    the nzzz field is dead). DELETE NOTHING without owner sign-off (audit rule).
+  • NEXT coding stage (Phase 2, after stabilization): **Etapa 6** (optional adaptive octree sizing).
     Etapas 6-9 are optional/later. NOTE: the "Key files" line numbers below have drifted since
     Etapa 5 (Stencils.jl / RemoveIsolatedComponents.jl grew) — re-grep before relying on them.
 
@@ -54,7 +66,7 @@ Key files (line numbers as of 2026-06-10, post-Etapa-4 + volume removal; re-grep
                                         centroid test (:436-512), orientation check_tetrahedron_orientation
                                         (:124) / fix_tetrahedron_orientation! (:152), remove_inverted_elements!
                                         (:539).  [experimental NZZZ / process_nzzz_case! / Schläfli: removed in Etapa 3]
-  src/GenerateMesh/NewCases-Experimental.jl — create_warping_params (:54), compute_dihedral_angle_range (:76)
+  src/GenerateMesh/DihedralAngles.jl    — DihedralBounds (:17), create_warping_params (:34), compute_dihedral_angle_range (:50)
   src/GenerateMesh/Schemes/A15Scheme.jl — A15 tile: tile_ref (:3), tetra_connectivity (:35)
   src/Fundamentals/BlockMesh.jl       — mutable struct (:4) (X, IEN, INE, SDF, node_sdf, node_hash, grid_step, grid_tol)
   src/Fundamentals/SDFOperations.jl   — get_cell_sdf_values (:4), eval_sdf (:24), compute_gradient (:89/:108)
@@ -202,6 +214,225 @@ beam/gripper (tet count, dihedral histogram, volume), freeze them as expected va
 regressions are caught automatically WITHOUT the C++ build. For unstructured-input cases (Etapa 8)
 no quartet oracle exists — instead, once the first verified-good unstructured run is approved by
 the owner, freeze ITS histogram/quality metrics as the automated regression baseline.
+````
+
+---
+
+## 🔎 Current-state audit — conformance / dead code / performance (READ-ONLY review)
+
+Not a numbered stage and NOT a coding task. This prompt produces a written REPORT on the state of
+the code after Etapas 1-5, as a gate before Etapa 6 is started. It changes NO code: it lists
+findings with evidence and recommendations, then stops for owner review. Approved findings become
+their own scoped cleanup stages afterwards (with the usual closeout). Paste the **Common context**
+block first, then this prompt.
+
+````text
+CURRENT-STATE AUDIT — Implicit2TetMesh.jl (READ-ONLY: produce a report, change no code, do not commit)
+
+GOAL: Assess the post-Etapa-5 codebase along three axes — (A) conformance to the published/quartet
+algorithm, (B) dead code left over from the pre-Etapa implementation, (C) performance — and report
+findings with EVIDENCE (file:line, measured numbers) and prioritized, low-risk recommendations.
+Do NOT edit code, do NOT commit. End by STOPPING for review.
+
+SCOPE NOTE — what "conform to the original" means here: the TARGET is the PUBLISHED algorithm, i.e.
+quartet's warp_vertices + trim_spikes AND Labelle §3.4 for surface tets. Etapa 4 DELIBERATELY
+replaced quartet's centroid-only remove_exterior_tets with Labelle §3.4 (more principled), so the
+FINAL mesh is intentionally NOT bit-identical to quartet's final output. Do not flag that documented
+divergence as a bug. The warp and the trim stencils, by contrast, ARE meant to match quartet 1:1.
+
+BEFORE STARTING: follow the common-context "BEFORE STARTING" checklist (read the listed code +
+references). Re-grep every function for its CURRENT line number — the "Key files" numbers in this
+file have drifted. Read quartet src/make_tet_mesh.cpp: warp_vertices (~152-193), trim_spikes
+(~221-346), remove_exterior_tets (~350-366), and predicates.cpp (sign convention). Skim the project
+auto-memory notes (quartet-crossval-harness, watertightness-pinches, volume-correction-removed) for
+the verified Etapa-2..5 results and the orient() sign GOTCHA.
+
+PART A — CONFORMANCE TO THE PUBLISHED / QUARTET ALGORITHM
+  A1. warp! (TetGenerator.jl) vs quartet warp_vertices: edge-based, LINEAR cut point (no Newton),
+      alpha = phi_i/(phi_i - phi_j), threshold 0.3, each vertex keeps its CLOSEST qualifying cut
+      point, displacements applied at once (order-independent), warped node_sdf set to 0. Confirm 1:1.
+  A2. slice_ambiguous_tetrahedra! / apply_stencil_trim_spikes! (Stencils.jl) vs trim_spikes: every
+      sign case (+++-/+---/++--/+0--/++0-/+00-), the QUAD-SPLIT diagonal choice (the sorted-pqrs /
+      vertex-index tie-break that keeps face-adjacent tets watertight), and orientation handling.
+  A3. Surface-only ("quadruple-zero") handling vs Labelle §3.4: inverted-or-bad-dihedral → discard;
+      then 4 faces adjoin solid → retain / 0 adjoin → discard / else centroid SDF sign. Verify it
+      matches the PUBLISHED heuristic (this is the INTENDED divergence from quartet — judge it correct,
+      not whether it equals quartet).
+  A4. Sign convention: phi<0=inside applied consistently (Etapa 1); exact predicates back EVERY
+      orientation/inversion decision through the single is_positively_oriented helper, with the
+      "orient() returns the OPPOSITE sign of the float det" convention correct (memory GOTCHA). A
+      tolerance gates ONLY near-zero-volume magnitude, never the sign.
+  A5. A15-only: no Schläfli, no experimental_nzzz remnants in any ACTIVE code path.
+  A6. RE-RUN the quartet cross-validation (🧪 section above) on beam at upsample factor 4 (the only
+      factor where the two lattices physically coincide): rebuild the driver, export the SDF, run,
+      compare. Expect the post-warp mesh still bit-identical and the final histograms as recorded in
+      memory. If the C++ build is unavailable, FALL BACK to scratch/measure.jl vs the frozen baselines
+      (beam: min 11.276° / <10°=0 / >140°=81 / inverted 0; gripper: min 9.537° / <10°=11 / >140°=1136
+      / inverted 0) and state that the oracle run was skipped.
+  Report every divergence from the published algorithm as a finding (severity + file:line + fix idea).
+
+PART B — DEAD CODE / LEFTOVERS OF THE PRE-ETAPA IMPLEMENTATION
+  Method: build the reachable call graph from the TWO real entry points — generate_tetrahedral_mesh
+  (TetMeshGenerator.jl) and the scripts under test/ (runtests.jl, Examples/beam.jl, Examples/gripper.jl).
+  A symbol reachable from neither, and not part of the package's intended public API, is a candidate.
+  Check, at minimum:
+   • Files in src/ that are never include-d (suspect: Fundamentals/Hex8_shape.jl — it is NOT listed in
+     Fundamentals.jl; confirm). List every such orphan file.
+   • NewCases-Experimental.jl: only create_warping_params + compute_dihedral_angle_range are meant to
+     survive — list every other definition there and whether anything references it.
+   • Confirmed-removed features that might leave danglers: Newton warp (warp_node_to_isocontour! — and
+     is compute_gradient now called by anything?), Schläfli (process_cell_Schlafli!, SchlafliScheme.jl),
+     post-hoc volume correction (correct_mesh_volume! / CorrectMeshVolume / unused parts of
+     CalcVolumeFromSDF). Confirm each is fully gone, or flag the remnant.
+   • Utils/ and Modification/ exports — assess_mesh_quality, slice_mesh_with_plane!,
+     count_negative_determinants, calculate_volume_from_sdf, ModifyResultingMesh internals: which are
+     reachable from the pipeline OR from tests/examples? Test-only or public-API use COUNTS as used — say so.
+   • BlockMesh struct fields never read (e.g. node_hash, grid_tol?) and MeshGenerationOptions
+     fields/params that no longer change the output.
+   • module export lists naming symbols that nothing imports.
+  For EACH candidate, classify: (1) safe to delete, (2) keep — public API or test/example only,
+  (3) uncertain — needs an owner decision. Produce a removal CHECKLIST. DELETE NOTHING in this pass.
+
+PART C — PERFORMANCE
+  Use the existing harnesses (scratch/, see memory): timeit.jl (per-phase timing, JIT-warmed on beam),
+  slice_probe.jl (alloc/GC per phase), measure.jl (quality). Re-measure gripper end-to-end + per phase.
+   • Compare to the Etapa-5 baseline (gripper ≈8.1s total). Confirm NO regression; give a per-phase
+     timing + allocation table.
+   • Validate (or refute, with data) the recorded claim that slice's remaining ≈2.5s is GENUINE
+     trimming work (cut-point creation, output element Vectors, exact orient per output tet), not waste.
+   • Confirm the 3 update_connectivity! calls are each still REQUIRED (memory: all three are).
+   • Look ONLY for NEW, low-risk, OUTPUT-PRESERVING opportunities (allocation hotspots, redundant
+     eval_sdf, avoidable rebuilds). For each: expected impact + risk. Do not re-litigate solved wins;
+     do not propose algorithm changes for speed in this audit.
+
+DELIVERABLE: ONE written report, three sections (A/B/C). Each finding: what it is, evidence (file:line
+or measured number), severity/priority, and a concrete recommendation. No code changes, no commit.
+STOP for review. (If asked afterwards, the cleanups become their own scoped stages with the usual closeout.)
+````
+
+---
+
+## 🧰 Test suite overhaul — functional tests + per-stage beam diagnostics
+
+Not a numbered stage: an infrastructure task that can run any time after Etapa 5. It replaces the
+current script-style `test/runtests.jl` (zero `@test` assertions) with a real, assertion-based test
+suite, plus a per-stage beam diagnostic that exports a VTU after every pipeline phase so a broken
+phase can be SEEN in ParaView. Paste the **Common context** block first, then this prompt.
+
+````text
+TEST SUITE OVERHAUL — Implicit2TetMesh.jl (replace script-style runtests.jl with real functional tests)
+
+GOAL: Make `Pkg.test()` a meaningful gate. Two kinds of tests:
+  (a) INVARIANT tests — properties EVERY correct output must satisfy (watertight boundary, zero
+      inverted tets, single component, node-SDF consistency, positive volumes). These survive future
+      Etapas 6-9 unchanged.
+  (b) BASELINE (regression) tests — exact frozen numbers (node/tet counts, dihedral histogram). The
+      pipeline is deterministic (byte-identical reruns verified in Etapa 5), so exact equality is
+      safe and sharp. Baselines live in ONE file so an INTENTIONAL pipeline change (e.g. Etapa 6)
+      re-freezes them in a single, reviewable commit.
+Plus a per-stage beam diagnostic test that exports the mesh to VTU after EACH pipeline phase, so
+when a stage breaks, the assertion names the phase and the VTU shows the damage.
+
+TARGET LAYOUT (owner requirement — keep it clean; the TRACKED tree under test/ is EXACTLY two
+files and one folder):
+  test/
+    runtests.jl            — the core suite itself (all @testsets for (a)+(b) live HERE, not in
+                             per-test include files), plus `include("test_beam_stages.jl")`
+    test_beam_stages.jl    — the per-stage beam diagnostic (also runnable standalone)
+    helpers/               — ALL helper code, no @testsets inside:
+      helpers.jl           — check helpers (see below) + data-loading convenience
+      baselines.jl         — the frozen constants, nothing else
+  test/output/             — runtime VTU artifacts ONLY; created by the tests at runtime, added to
+                             .gitignore (it is not part of the tracked tree, which keeps the
+                             two-files-one-folder rule for what is in git)
+
+RESTRUCTURING (to reach that layout):
+  1. Move `test/Examples/beam.jl` and `test/Examples/gripper.jl` to a new top-level `examples/`
+     directory (they are documentation, not tests — standard Julia convention). Fix their relative
+     data paths for the new location; delete `test/Examples/`.
+  2. Fold `test/GenerateMeshTests/validate_sdf_values.jl` into `test/helpers/helpers.jl`: strip the
+     println banners (make it silent), have it RETURN the stats Dict only; delete
+     `test/GenerateMeshTests/`.
+  3. Delete the stray `.vtu` files lying in `test/` (untracked build artifacts). All test exports go
+     to `test/output/` from now on; add `test/output/` to .gitignore.
+  4. Use `joinpath(@__DIR__, "..", "data", ...)` for all data paths — never pwd-relative strings.
+
+HELPERS (test/helpers/helpers.jl — promote the proven logic from scratch/, do not reinvent):
+  • check_watertight(mesh) -> (open_edges, boundary_faces, ...): port from scratch/watertight.jl.
+    CORRECTNESS CRITERION IS open_edges == 0 ONLY. Do NOT assert non-manifold pinch counts — they
+    are benign thin-feature geometry and NOT invariant across stages (see memory: beam 1→7 after
+    Etapa 4, expected).
+  • dihedral_stats(mesh) -> (min, max, <5°, <10°, >140°, inverted): port from scratch/measure.jl
+    (the dih() function), unchanged semantics so numbers stay comparable with all recorded history.
+  • count_inverted_exact(mesh): use the SAME exact-predicate orientation helper the pipeline uses
+    (is_positively_oriented). GOTCHA (memory): ExactPredicates.orient returns the OPPOSITE sign of
+    the float det — reuse the pipeline helper, never call orient() raw.
+  • count_components(mesh): connected components over shared faces (reuse the face->elements map
+    pattern from RemoveIsolatedComponents.jl).
+  • validate_node_sdf_values(mesh, tol): the silenced version from step 2 above.
+  • load_beam(), load_gripper(): JLD2 loading with the @__DIR__-based paths.
+
+CORE SUITE (test/runtests.jl — clean nested @testsets, no RUN_* flags, no println noise):
+  @testset "Options validation": MeshGenerationOptions rejects scheme != "A15" and negative
+    warp_param (@test_throws); defaults are as documented.
+  @testset "Beam pipeline (no planes)": run generate_tetrahedral_mesh on beam, output prefix under
+    test/output/. Assert ALL invariants: open_edges == 0, inverted == 0, components == 1,
+    validate_node_sdf_values max_error <= 0.005, all element volumes > 0. Then assert BASELINES:
+    exact node count, exact tet count, dihedral histogram fields == frozen constants.
+  @testset "Beam pipeline (with cutting planes)": the two-plane beam config (Square(30) at x=0,
+    Square(5) at x=60, warp_param 0.3). After the cut: open_edges == 0, inverted == 0, and the
+    baseline counts for the cut mesh.
+  @testset "Beam per-stage diagnostics": include("test_beam_stages.jl").
+  @testset "Gripper (opt-in)": ONLY when ENV["I2TM_TEST_GRIPPER"] == "1" — too slow for the default
+    run. Same invariants + frozen gripper baselines. Default suite must stay fast (~1-2 min).
+
+PER-STAGE BEAM DIAGNOSTIC (test/test_beam_stages.jl):
+  Purpose: when a pipeline phase breaks, the failing assertion NAMES the phase and the exported VTU
+  SHOWS it. Run the beam pipeline stage by stage with the EXACT call sequence of
+  generate_tetrahedral_mesh (src/TetMeshGenerator.jl — keep the two update_connectivity! calls with
+  build_ine = false; if the sequence there ever changes, mirror it here).
+  After EVERY stage: FIRST export the mesh (export_mesh_vtu) to test/output/ with a numbered name —
+  Beam-stage_1-generated.vtu, _2-warped, _3-sliced, _4-inverted_removed, _5-components,
+  _6-plane_cut — THEN run that stage's assertions, in this order, so the VTU exists for inspection
+  even when the assertion fails. One @testset per stage:
+    Stage 1 generate_mesh!: nodes > 0, tets > 0, every IEN index in bounds, no NaN/Inf coordinates,
+            count_inverted_exact == 0.
+    Stage 2 warp!: no NaN coordinates, validate_node_sdf_values max_error <= 0.005 (warped nodes
+            carry node_sdf = 0 and must sit on the isosurface within tolerance).
+    Stage 3 slice_ambiguous_tetrahedra! (+ update_connectivity!): open_edges == 0 (the watertight
+            check), every IEN index in bounds.
+    Stage 4 remove_inverted_elements!: count_inverted_exact == 0.
+    Stage 5 remove_isolated_components!(keep_largest) (+ final update_connectivity!): components
+            == 1, open_edges == 0, dihedral histogram == frozen stage-5 baseline (this stage equals
+            the no-planes pipeline output, so the constants are shared with the core suite).
+    Stage 6 warp_mesh_by_planes_sdf! (beam two-plane config): open_edges == 0,
+            count_inverted_exact == 0.
+  The file must also work standalone (julia --project=. test/test_beam_stages.jl) for interactive
+  debugging — guard the include-vs-standalone difference cleanly (e.g. it defines/uses the helpers
+  via include of helpers/ files that are idempotent to include twice).
+
+BASELINES (test/helpers/baselines.jl):
+  Re-freeze ALL constants from the CURRENT dev HEAD at implementation time by running the pipeline
+  once and copying the numbers — do NOT trust the numbers in this prompt to still be current. For
+  reference, the recorded post-Etapa-4/5 values were: beam tets 92,532, min 11.276°, <10° 0,
+  >140° 81, inverted 0; gripper tets 1,984,316, min 9.537°, <10° 11, >140° 1136, inverted 0.
+  Each constant gets a one-line comment. Top of file: a short note that after an INTENTIONAL
+  pipeline change these are re-frozen by running the suite and updating this one file in the same
+  commit as the change.
+
+OUT OF SCOPE (do not do): quartet C++ cross-validation in tests (stays in scratch/); soft quality
+thresholds (min angle > X°) — only invariants and exact baselines; synthetic/analytic SDF fixtures
+(wait for Etapa 8); touching src/ beyond what the moved helpers need (they must need NOTHING —
+if a src change seems required, STOP and report); Project.toml [extras]/[targets] reshuffling.
+
+VERIFY: `julia --project=. -e 'using Pkg; Pkg.test()'` passes (fast path). Then once with
+I2TM_TEST_GRIPPER=1 — passes. Break one stage on purpose locally (e.g. skip warp!) and confirm the
+per-stage test fails AT THE RIGHT STAGE and the VTUs up to that stage exist in test/output/. Revert.
+Confirm `git status` shows a clean test/ tree: exactly runtests.jl, test_beam_stages.jl, helpers/.
+
+CLOSEOUT: as in the common context — but the regression harness step is now `Pkg.test()` itself
+(scratch/measure.jl remains for ad-hoc gripper measurements). Update README (testing section: how to
+run, the gripper ENV flag, where VTUs land, examples/ move). Commit to dev. STOP for review.
 ````
 
 ---

@@ -1,6 +1,6 @@
 module Fundamentals
 
-export BlockMesh, get_cell_sdf_values, eval_sdf, compute_gradient, calculate_volume_from_sdf
+export BlockMesh, get_cell_sdf_values, eval_sdf, calculate_volume_from_sdf
 
 using StaticArrays
 using LinearAlgebra
