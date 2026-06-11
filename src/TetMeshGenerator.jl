@@ -8,24 +8,37 @@ Configuration options for tetrahedral mesh generation.
 - `warp_param::Float64`: Warping intensity for surface nodes (default: 0.3)
 - `plane_definitions::Union{Vector{PlaneDefinition}, Nothing}`: Cutting plane constraints (optional)
 - `quality_export::Bool`: Export detailed quality metrics (default: false)
+- `cut_points::Symbol`: How the surface cut point on a sign-crossing edge is located, in both
+  the warp and the slicing stage (default: `:linear`).
+    * `:linear` -- quartet's estimate from the two endpoint SDF values. Exact when the input
+      is a true signed distance function (the field is then linear along lattice edges) and
+      keeps bit-identity with the quartet reference implementation.
+    * `:bisection` -- the true zero of the interpolated field along the edge (Labelle &
+      Shewchuk 2007 §3.1). Use this when the input field is NOT distance-like (e.g. an
+      RBF-smoothed SDF): with `:linear` such fields get surface vertices misplaced into the
+      solid, which shows up as dented/wavy flat walls.
 """
 struct MeshGenerationOptions
     scheme::String
     warp_param::Float64
     plane_definitions::Union{Vector{PlaneDefinition},Nothing}
     quality_export::Bool
+    cut_points::Symbol
 
     function MeshGenerationOptions(;
         scheme::String = "A15",
         warp_param::Float64 = 0.3,
         plane_definitions::Union{Vector{PlaneDefinition},Nothing} = nothing,
         quality_export::Bool = false,
+        cut_points::Symbol = :linear,
     )
         # Validate inputs
         scheme == "A15" || error("Invalid scheme: $scheme. Only 'A15' is supported.")
         warp_param >= 0.0 || error("Invalid warp_param: $warp_param. Must be non-negative.")
+        cut_points === :linear || cut_points === :bisection ||
+            error("Invalid cut_points: $cut_points. Use :linear or :bisection.")
 
-        new(scheme, warp_param, plane_definitions, quality_export)
+        new(scheme, warp_param, plane_definitions, quality_export, cut_points)
     end
 end
 
@@ -76,12 +89,13 @@ function generate_tetrahedral_mesh(
     # Generate base tetrahedral mesh using selected discretization scheme
     generate_mesh!(mesh, options.scheme)
 
-    # Warp nodes to isosurface (SDF = 0 level set)
-    warp!(mesh, options.scheme)
+    # Warp nodes to isosurface (SDF = 0 level set). The cut-point mode is shared with the
+    # slicing below -- the two stages must agree on where the surface crosses an edge.
+    warp!(mesh, options.scheme; cut_points = options.cut_points)
     update_connectivity!(mesh; build_ine = false)   # INE not needed until the mesh is final
 
     # Process isosurface boundary - remove exterior elements
-    slice_ambiguous_tetrahedra!(mesh, options.scheme)
+    slice_ambiguous_tetrahedra!(mesh, options.scheme; cut_points = options.cut_points)
     update_connectivity!(mesh; build_ine = false)
     remove_inverted_elements!(mesh)
 

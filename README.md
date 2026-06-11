@@ -69,7 +69,8 @@ MeshGenerationOptions(;
     scheme::String = "A15",                           # Discretization scheme (only "A15" is supported)
     warp_param::Float64 = 0.3,                        # Warping intensity for plane alignment (0.0 = disabled)
     plane_definitions::Union{Vector{PlaneDefinition}, Nothing} = nothing,  # Cutting planes for BC application
-    quality_export::Bool = false                      # Export detailed quality metrics
+    quality_export::Bool = false,                     # Export detailed quality metrics
+    cut_points::Symbol = :linear                      # Surface cut-point location: :linear or :bisection
 )
 ```
 #### Option Details
@@ -78,6 +79,7 @@ MeshGenerationOptions(;
 - **warp_param**: Controls how strongly nodes are attracted to cutting planes (0.0-1.0 range recommended)
 - **plane_definitions**: Vector of `PlaneDefinition` objects for boundary plane constraints
 - **quality_export**: When `true`, exports additional quality metrics (Jacobian determinants, dihedral angles, volume ratios)
+- **cut_points**: How the surface cut point on a sign-crossing lattice edge is located, in both the warp and the slicing stage. `:linear` (default) estimates it from the two endpoint SDF values, exactly like the quartet reference implementation — accurate when the input is a true signed distance function. `:bisection` finds the actual zero of the interpolated field along the edge (Labelle & Shewchuk 2007, §3.1); use it when the input field is *not* distance-like (e.g. a smoothed SDF), where the linear estimate misplaces surface vertices and flat walls come out dented.
 
 ### Example Usage
 ```julia

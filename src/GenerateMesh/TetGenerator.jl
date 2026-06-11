@@ -213,17 +213,86 @@ end
 
 
 # ------------------------------------------------------------------
+# Cut-point location on a sign-crossing edge
+# ------------------------------------------------------------------
+"""
+    bisect_cut_alpha(mesh, Xi, Xj, phi_i, phi_j) -> Float64
+
+Fraction `alpha` in (0, 1) of the TRUE cut point on the segment `Xi -> Xj`, found by
+iterative bisection of the continuous cut function `eval_sdf` along the segment -- the
+reference cut-point computation of Labelle & Shewchuk 2007 (§3.1, their prototype).
+
+`phi_i`, `phi_j` must be valid bracket values of strictly opposite sign (the callers only
+reach this for sign-crossing edges whose endpoints are pristine lattice nodes, where the
+stored `node_sdf` equals `eval_sdf` exactly). 40 halvings resolve the cut point to
+~1e-12 of the edge length, so the result is deterministic and exact for all practical
+purposes. Cost: 40 `eval_sdf` calls per crossing edge (vs 0 for the linear estimate).
+
+This exists for inputs that are NOT distance-like (e.g. an RBF-smoothed field whose
+gradient collapses inside thin features): there the linear estimate
+`phi_i / (phi_i - phi_j)` can be off by a large fraction of the edge and the boundary
+visibly dents into the solid. On a true SDF both methods coincide (the field is linear
+along edges), which is why the LINEAR estimate stays the default everywhere (it keeps
+bit-identity with the quartet reference implementation).
+"""
+function bisect_cut_alpha(
+    mesh::BlockMesh,
+    Xi::SVector{3,Float64},
+    Xj::SVector{3,Float64},
+    phi_i::Float64,
+    phi_j::Float64,
+)::Float64
+    lo = 0.0
+    hi = 1.0
+    flo = phi_i
+    for _ = 1:40
+        mid = 0.5 * (lo + hi)
+        fm = eval_sdf(mesh, Xi + mid * (Xj - Xi))
+        if (flo < 0) == (fm < 0)
+            lo = mid
+            flo = fm
+        else
+            hi = mid
+        end
+    end
+    return 0.5 * (lo + hi)
+end
+
+"""
+    validate_cut_points(cut_points::Symbol)
+
+Shared argument check for the `cut_points` mode switch: `:linear` (quartet's endpoint-value
+estimate, the default) or `:bisection` (Labelle & Shewchuk §3.1 true cut point). The warp and
+the slicing MUST run in the same mode -- mixing them re-introduces the linear placement error
+through whichever half still uses it.
+"""
+function validate_cut_points(cut_points::Symbol)
+    cut_points === :linear || cut_points === :bisection ||
+        error("Invalid cut_points: $cut_points. Use :linear or :bisection.")
+end
+
+# ------------------------------------------------------------------
 # Edge-based warp to linear cut points (port of quartet warp_vertices)
 # ------------------------------------------------------------------
 """
-    warp!(mesh, scheme; threshold = 0.3)
+    warp!(mesh, scheme; threshold = 0.3, cut_points = :linear)
 
-Snap lattice vertices onto the linear cut points of incident sign-crossing edges.
+Snap lattice vertices onto the cut points of incident sign-crossing edges.
 
 For every tetrahedron edge `(i, j)` whose endpoints have strictly opposite SDF signs the
-isosurface crosses the edge at the linear cut point
+isosurface crosses the edge at the cut point
 
-    X_cut = X_i + alpha * (X_j - X_i),   alpha = phi_i / (phi_i - phi_j)  in (0, 1).
+    X_cut = X_i + alpha * (X_j - X_i),   alpha in (0, 1),
+
+where `alpha` is located according to `cut_points`:
+  - `:linear`    (default) `alpha = phi_i / (phi_i - phi_j)`, quartet's estimate from the
+    endpoint values. Exact when the field is linear along the edge (true SDF); keeps
+    bit-identity with quartet's `warp_vertices`.
+  - `:bisection` the true zero of `eval_sdf` along the edge (`bisect_cut_alpha`,
+    Labelle & Shewchuk §3.1). Needed when the input field is NOT distance-like (e.g.
+    RBF-smoothed data): the linear estimate then misplaces vertices into the solid and the
+    flat walls come out dented. Must match the `cut_points` mode of
+    `slice_ambiguous_tetrahedra!`.
 
 If that cut point is close to an endpoint (`alpha < threshold` for `i`, or
 `alpha > 1 - threshold` for `j`), the endpoint is moved onto the cut point and its stored
@@ -232,18 +301,23 @@ warped to its CLOSEST qualifying cut point (smallest `alpha * |edge|^2`, quartet
 Displacements are computed from the original positions and SDF values and applied all at
 once, so the result does not depend on vertex order.
 
-The vertex is moved to the LINEAR cut point only (no Newton projection to the true
-isosurface); keeping the move linear is what leaves the surrounding tetrahedra well shaped.
-This is a direct port of quartet's `warp_vertices` (make_tet_mesh.cpp:152-193); see
-Labelle 2007 §3.2.
+The vertex moves ALONG THE EDGE only (no Newton projection off the edge); that is what
+leaves the surrounding tetrahedra well shaped. With `:linear` this is a direct port of
+quartet's `warp_vertices` (make_tet_mesh.cpp:152-193); see Labelle 2007 §3.2.
 
 `threshold` is quartet's warp coefficient (must lie in `[0, 0.5]`) and is exposed so later
 stages can tune it. `scheme` is kept only for call-site compatibility: the warp operates on
 `mesh.IEN` / `mesh.node_sdf` and is identical for every scheme.
 """
-function warp!(mesh::BlockMesh, scheme::String; threshold::Float64 = 0.3)
-    @info "Warping vertices to edge cut points (threshold = $threshold)..."
+function warp!(
+    mesh::BlockMesh,
+    scheme::String;
+    threshold::Float64 = 0.3,
+    cut_points::Symbol = :linear,
+)
+    @info "Warping vertices to edge cut points (threshold = $threshold, cut_points = $cut_points)..."
     @assert 0.0 <= threshold <= 0.5 "warp threshold must lie in [0, 0.5]"
+    validate_cut_points(cut_points)
 
     n = length(mesh.X)
     # Best (closest) qualifying cut point found so far, per vertex.
@@ -264,7 +338,10 @@ function warp!(mesh::BlockMesh, scheme::String; threshold::Float64 = 0.3)
                 # Only strictly sign-crossing edges have an interior cut point.
                 if (phi_i < 0 && phi_j > 0) || (phi_i > 0 && phi_j < 0)
                     # Fraction along the edge from i to the zero crossing, in (0, 1).
-                    alpha = phi_i / (phi_i - phi_j)
+                    alpha =
+                        cut_points === :bisection ?
+                        bisect_cut_alpha(mesh, mesh.X[i], mesh.X[j], phi_i, phi_j) :
+                        phi_i / (phi_i - phi_j)
                     edge2 = sum(abs2, mesh.X[j] - mesh.X[i])
 
                     if alpha < threshold

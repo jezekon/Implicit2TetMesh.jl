@@ -31,6 +31,25 @@ const BEAM_DIH = (
 )
 
 # ------------------------------------------------------------------------------
+# Beam, no cutting planes, cut_points = :bisection (Labelle & Shewchuk §3.1).
+# The numbers differ from the :linear baseline BY DESIGN: on the beam's smoothed
+# (non-distance) SDF the bisected cut points sit on the true trilinear zero set,
+# so more crossing-edge cuts survive (more tets) and the sliver-producing
+# misplaced cut vertices disappear (better dihedral extremes).
+# ------------------------------------------------------------------------------
+const BEAM_BISECT_NODES = 22742   # length(mesh.X)
+const BEAM_BISECT_TETS = 94594    # length(mesh.IEN)
+
+const BEAM_DIH_BISECT = (
+    min = 14.607,                 # smallest dihedral angle
+    max = 148.575,                # largest dihedral angle
+    lt5 = 0,                      # dihedral angles < 5 deg
+    lt10 = 0,                     # dihedral angles < 10 deg
+    gt140 = 61,                   # dihedral angles > 140 deg
+    inverted = 0,                 # tets with non-positive float signed volume
+)
+
+# ------------------------------------------------------------------------------
 # Beam, two cutting planes (Square(30) @ x=0, Square(5) @ x=60, warp_param 0.3).
 # The plane warp only moves nodes, so the counts equal the no-planes mesh.
 # ------------------------------------------------------------------------------

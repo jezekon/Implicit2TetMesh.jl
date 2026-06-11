@@ -347,6 +347,37 @@ function node_sdf_consistency(mesh::BlockMesh; pristine_tol::Float64 = 1e-6)
 end
 
 """
+    boundary_max_abs_sdf(mesh) -> Float64
+
+Largest `|eval_sdf|` over all BOUNDARY vertices (vertices of faces incident to exactly one
+tet) -- i.e. how far the mesh boundary strays from the implicit surface, measured in field
+units. This is the surface-fidelity invariant of the `cut_points = :bisection` mode: every
+boundary vertex then sits on the trilinear zero set, so the value is ~0 (vs ~0.13 on the
+beam with `:linear` on the non-distance smoothed input). Returns 0.0 for an empty mesh.
+"""
+function boundary_max_abs_sdf(mesh::BlockMesh)
+    face_count = Dict{NTuple{3,Int},Int}()
+    for tet in mesh.IEN
+        for f in tet_faces(tet)
+            face_count[f] = get(face_count, f, 0) + 1
+        end
+    end
+    boundary_verts = Set{Int}()
+    for (f, c) in face_count
+        if c == 1
+            push!(boundary_verts, f[1])
+            push!(boundary_verts, f[2])
+            push!(boundary_verts, f[3])
+        end
+    end
+    m = 0.0
+    for v in boundary_verts
+        m = max(m, abs(eval_sdf(mesh, mesh.X[v])))
+    end
+    return m
+end
+
+"""
     validate_node_sdf_values(mesh, tolerance=0.005) -> Dict
 
 Silent port of the former test/GenerateMeshTests/validate_sdf_values.jl. Compares

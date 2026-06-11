@@ -1,13 +1,18 @@
 # Functions for tetrahedral mesh slicing along an isosurface
 
 """
-    slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String)
+    slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String; cut_points = :linear)
 
 Slice tetrahedra that stick out across the isosurface (SDF zero level set), trimming each one
 back to the interior region (SDF <= 0). This is a direct port of quartet's `trim_spikes`
 (make_tet_mesh.cpp:221-346). Every spike tetrahedron is replaced by smaller tetrahedra whose
-vertices lie either on the original lattice or on the linear edge cut points produced by
-`cut_edge!`.
+vertices lie either on the original lattice or on the edge cut points produced by `cut_edge!`.
+
+`cut_points` selects how the cut point on a crossing edge is located (`:linear` = quartet's
+endpoint-value estimate, the default; `:bisection` = the true zero of `eval_sdf` along the
+edge, Labelle & Shewchuk §3.1 -- required for input fields that are not distance-like). It
+MUST match the mode `warp!` was run with, otherwise the warped vertices and the cut vertices
+disagree about where the surface is.
 
 The "quadruple-zero" tetrahedra (all four vertices on the surface) are handled separately in a
 SECOND pass by `resolve_surface_candidates!`, following Labelle's surface-fidelity heuristic
@@ -18,8 +23,13 @@ of the solid mesh, which is only known once the whole solid mesh has been built.
 - `mesh::BlockMesh`: The mesh to process
 - `scheme::String`: Discretization scheme (only "A15" is supported)
 """
-function slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String)
-    @info "Slicing tetrahedra using trim_spikes logic..."
+function slice_ambiguous_tetrahedra!(
+    mesh::BlockMesh,
+    scheme::String;
+    cut_points::Symbol = :linear,
+)
+    @info "Slicing tetrahedra using trim_spikes logic (cut_points = $cut_points)..."
+    validate_cut_points(cut_points)
 
     cut_map = Dict{Tuple{Int,Int},Int}()
     solid_tets = Vector{Vector{Int64}}()          # definitely-interior output tets (no quadruple-zero)
@@ -32,7 +42,7 @@ function slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String)
     # First pass: trim every tetrahedron. Crossing and fully-interior tets are emitted straight
     # into the solid mesh; all-on-surface ("quadruple-zero") tets are collected as candidates.
     for tet in current_IEN
-        apply_stencil_trim_spikes!(mesh, tet, cut_map, solid_tets, surface_candidates)
+        apply_stencil_trim_spikes!(mesh, tet, cut_map, solid_tets, surface_candidates, cut_points)
     end
 
     # Second pass: decide which deferred surface-only tets to keep (Labelle §3.4 heuristic).
@@ -47,18 +57,22 @@ function slice_ambiguous_tetrahedra!(mesh::BlockMesh, scheme::String)
 end
 
 """
-    cut_edge!(i, j, mesh, node_sdf, cut_map) -> Int
+    cut_edge!(i, j, mesh, node_sdf, cut_map, cut_points = :linear) -> Int
 
-Find or create the vertex where the isosurface crosses the edge `(i, j)`, placed at the LINEAR
-interpolation point
+Find or create the vertex where the isosurface crosses the edge `(i, j)`, placed at the cut
+point
 
-    X_cut = (1 - alpha) * X_i + alpha * X_j,    alpha = phi_i / (phi_i - phi_j)  in (0, 1),
+    X_cut = (1 - alpha) * X_i + alpha * X_j,    alpha in (0, 1).
 
-exactly as in quartet's `cut_edge` (make_tet_mesh.cpp:196-217). Using the linear point (instead
-of projecting onto the true isosurface) keeps the trimmed tetrahedra well shaped and is
-consistent with the edge-based `warp!`. Each edge is cut only once: the new vertex index is
-cached in `cut_map` (keyed by the canonical edge), so all tetrahedra sharing the edge reuse the
-same vertex and the boundary stays watertight.
+With `cut_points = :linear` (default) `alpha = phi_i / (phi_i - phi_j)`, exactly as in
+quartet's `cut_edge` (make_tet_mesh.cpp:196-217) -- exact for distance-like fields. With
+`:bisection` the true zero of `eval_sdf` along the edge is used (`bisect_cut_alpha`,
+Labelle & Shewchuk §3.1) -- required for non-distance inputs, where the linear estimate puts
+the cut vertex visibly inside the solid. Either way the vertex stays ON the edge (no
+projection off it), which keeps the trimmed tetrahedra well shaped, and the mode must be
+consistent with the one used by the edge-based `warp!`. Each edge is cut only once: the new
+vertex index is cached in `cut_map` (keyed by the canonical edge), so all tetrahedra sharing
+the edge reuse the same vertex and the boundary stays watertight.
 
 If an endpoint already lies on the surface (`|phi| < tol`) that endpoint index is returned
 instead of creating a new vertex.
@@ -69,6 +83,7 @@ function cut_edge!(
     mesh::BlockMesh,
     node_sdf::Vector{Float64},
     cut_map::Dict{Tuple{Int,Int},Int},
+    cut_points::Symbol = :linear,
 )::Int
     # Get SDF values for both endpoints
     sdf_i = node_sdf[i]
@@ -100,9 +115,14 @@ function cut_edge!(
         return cut_map[edge]
     end
 
-    # Linear cut point along the edge (quartet cut_edge): alpha is the fraction from i to the
-    # zero crossing, and the point is the straight-line interpolation between the endpoints.
-    alpha = sdf_i / (sdf_i - sdf_j)
+    # Cut point along the edge: alpha is the fraction from i to the zero crossing, and the
+    # point is the straight-line interpolation between the endpoints. :linear estimates alpha
+    # from the endpoint values (quartet cut_edge); :bisection locates the actual zero of
+    # eval_sdf on the segment.
+    alpha =
+        cut_points === :bisection ?
+        bisect_cut_alpha(mesh, mesh.X[i], mesh.X[j], sdf_i, sdf_j) :
+        sdf_i / (sdf_i - sdf_j)
     cut_point = (1.0 - alpha) * mesh.X[i] + alpha * mesh.X[j]
 
     push!(mesh.X, cut_point)
@@ -198,13 +218,15 @@ function fix_tetrahedron_orientation!(mesh::BlockMesh, tet::Vector{Int})
 end
 
 """
-    apply_stencil_trim_spikes!(mesh, tet, cut_map, solid_tets, surface_candidates)
+    apply_stencil_trim_spikes!(mesh, tet, cut_map, solid_tets, surface_candidates,
+                               cut_points = :linear)
 
 Apply the trimming algorithm to a single tetrahedron that crosses the isosurface.
 The trimmed interior tetrahedra (SDF <= 0) are pushed straight into `solid_tets`; there is no
 per-tetrahedron return array (this function runs once for every tetrahedron in the mesh, so
 avoiding that allocation matters). The SDF sign pattern is classified case-by-case, ported 1:1
-from quartet `trim_spikes` (make_tet_mesh.cpp:221-346).
+from quartet `trim_spikes` (make_tet_mesh.cpp:221-346). `cut_points` is forwarded to
+`cut_edge!` (see there).
 
 A "quadruple-zero" tetrahedron (all four vertices on the surface) is NOT decided here: it is
 appended to `surface_candidates` and resolved later by `resolve_surface_candidates!` (Labelle
@@ -216,6 +238,7 @@ function apply_stencil_trim_spikes!(
     cut_map::Dict{Tuple{Int,Int},Int},
     solid_tets::Vector{Vector{Int64}},
     surface_candidates::Vector{Vector{Int64}},
+    cut_points::Symbol = :linear,
 )
     # SDF value at each of the four nodes. Read as scalars (no per-tet temporary array): the fast
     # paths below run for EVERY tetrahedron, and the vast majority are fully interior, so a
@@ -346,9 +369,9 @@ function apply_stencil_trim_spikes!(
         # Case NNNP (quartet +++-): three nodes outside, one inside
     elseif is_s_outside && is_r_outside && is_q_outside && is_p_inside
         # Cut three edges from outside nodes to inside node
-        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        qp = cut_edge!(q_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map, cut_points)
+        rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map, cut_points)
+        qp = cut_edge!(q_idx, p_idx, mesh, mesh.node_sdf, cut_map, cut_points)
 
         # Create one tetrahedron from three cut points and interior node
         if flipped
@@ -361,9 +384,9 @@ function apply_stencil_trim_spikes!(
     elseif is_s_outside && is_r_inside
         if !is_r_outside && !is_q_outside # Confirm r, q, p are interior nodes
             # Cut edges from outside node to each interior node
-            sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map)
-            sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
-            sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+            sr = cut_edge!(s_idx, r_idx, mesh, mesh.node_sdf, cut_map, cut_points)
+            sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map, cut_points)
+            sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map, cut_points)
 
             # Tetrahedralize the resulting triangular prism. The quad faces are split to the
             # deepest vertex; the consistent sort above makes the split match face-adjacent tets.
@@ -384,10 +407,10 @@ function apply_stencil_trim_spikes!(
         # Case NNPP (quartet ++--): two nodes outside, two inside
     elseif is_r_outside && is_q_inside
         # Cut all four edges crossing the isosurface
-        sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
-        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        rq = cut_edge!(r_idx, q_idx, mesh, mesh.node_sdf, cut_map)
-        rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map, cut_points)
+        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map, cut_points)
+        rq = cut_edge!(r_idx, q_idx, mesh, mesh.node_sdf, cut_map, cut_points)
+        rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map, cut_points)
 
         # Create three tetrahedra for interior region (quad split consistent with the sort)
         if flipped
@@ -403,8 +426,8 @@ function apply_stencil_trim_spikes!(
         # Case NZPP (quartet +0--): one outside, one on surface, two inside
     elseif is_s_outside && is_r_surface && is_q_inside
         # Cut edges from outside node to interior nodes
-        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map)
+        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map, cut_points)
+        sq = cut_edge!(s_idx, q_idx, mesh, mesh.node_sdf, cut_map, cut_points)
 
         # Create two tetrahedra
         if flipped
@@ -418,8 +441,8 @@ function apply_stencil_trim_spikes!(
         # Case NNZP (quartet ++0-): two outside, one on surface, one inside
     elseif is_r_outside && is_q_surface && is_p_inside
         # Cut edges from outside nodes to inside node
-        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
-        rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map, cut_points)
+        rp = cut_edge!(r_idx, p_idx, mesh, mesh.node_sdf, cut_map, cut_points)
 
         # Create one tetrahedron
         if flipped
@@ -431,7 +454,7 @@ function apply_stencil_trim_spikes!(
         # Case NZZP (quartet +00-): one outside, two on surface, one inside
     elseif is_s_outside && is_r_surface && is_q_surface && is_p_inside
         # Cut edge from outside node to inside node
-        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map)
+        sp = cut_edge!(s_idx, p_idx, mesh, mesh.node_sdf, cut_map, cut_points)
 
         # Create one tetrahedron
         if flipped

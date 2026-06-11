@@ -43,15 +43,18 @@ end
         @test opts.warp_param == 0.3
         @test opts.plane_definitions === nothing
         @test opts.quality_export == false
+        @test opts.cut_points == :linear
 
-        # Rejects an unsupported scheme and a negative warp_param.
+        # Rejects an unsupported scheme, a negative warp_param, and an unknown cut-point mode.
         @test_throws ErrorException MeshGenerationOptions(scheme = "BCC")
         @test_throws ErrorException MeshGenerationOptions(warp_param = -0.1)
+        @test_throws ErrorException MeshGenerationOptions(cut_points = :newton)
 
         # A valid non-default configuration is accepted.
         ok = MeshGenerationOptions(warp_param = 0.5, quality_export = true)
         @test ok.warp_param == 0.5
         @test ok.quality_export == true
+        @test MeshGenerationOptions(cut_points = :bisection).cut_points == :bisection
     end
 
     @testset "Beam pipeline (no planes)" begin
@@ -99,6 +102,39 @@ end
         # Baselines for the cut mesh
         @test length(mesh.X) == BEAM_CUT_NODES
         @test length(mesh.IEN) == BEAM_CUT_TETS
+    end
+
+    # The :bisection cut-point mode (Labelle & Shewchuk §3.1) exists for input fields that
+    # are NOT distance-like -- the beam's RBF-smoothed SDF is exactly such a field, so it
+    # doubles as the regression input. The numbers differ from the :linear default BY
+    # DESIGN (frozen separately in BEAM_DIH_BISECT); the mode's defining guarantee is
+    # surface fidelity: every boundary vertex must sit on the trilinear zero set. With
+    # :linear the beam's boundary strays up to ~0.13 field units from it (the
+    # dented-flat-walls artifact).
+    @testset "Beam pipeline (bisection cut points)" begin
+        outdir = ensure_output_dir()
+        mesh = generate_tetrahedral_mesh(
+            beam_grid_file(),
+            beam_sdf_file(),
+            joinpath(outdir, "beam_bisection");
+            options = MeshGenerationOptions(cut_points = :bisection),
+        )
+
+        # Invariants
+        @test check_watertight(mesh).open_edges == 0
+        @test count_inverted_exact(mesh) == 0
+        @test count_components(mesh) == 1
+        @test node_sdf_consistency(mesh).pristine_within_tol
+        @test min_signed_volume(mesh) > 0
+
+        # Surface fidelity: the boundary tracks the implicit surface (the reason this mode
+        # exists). 1e-6 is generous -- 40 bisection halvings land within ~1e-12 of the zero.
+        @test boundary_max_abs_sdf(mesh) <= 1e-6
+
+        # Baselines (shared with the per-stage diagnostic's Stage 5)
+        @test length(mesh.X) == BEAM_BISECT_NODES
+        @test length(mesh.IEN) == BEAM_BISECT_TETS
+        check_dihedral_baseline(dihedral_stats(mesh), BEAM_DIH_BISECT)
     end
 
     # Per-stage beam diagnostic (defines its own "Beam per-stage diagnostics"
