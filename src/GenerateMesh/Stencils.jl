@@ -449,19 +449,37 @@ function apply_stencil_trim_spikes!(
 end
 
 """
+    face_key(a::Int, b::Int, c::Int) -> NTuple{3,Int}
+
+Return the three node indices sorted ascending, as a tuple, WITHOUT allocating a temporary array
+(a small 3-element sorting network). This is the canonical orientation-independent key for a
+triangular face. It mirrors the identical helper in `src/Modification/RemoveIsolatedComponents.jl`;
+the function is duplicated here because `GenerateMesh` is included before `Modification` and so
+cannot depend on it.
+"""
+function face_key(a::Int, b::Int, c::Int)::NTuple{3,Int}
+    a > b && ((a, b) = (b, a))
+    b > c && ((b, c) = (c, b))
+    a > b && ((a, b) = (b, a))
+    return (a, b, c)
+end
+
+"""
     tetrahedron_faces(tet) -> NTuple{4, NTuple{3,Int}}
 
-Return the four triangular faces of a tetrahedron as sorted node-index triples. Sorting makes the
-key orientation-independent, so a face shared by two tetrahedra maps to the same key (the same
-face-map idiom used in `remove_isolated_components!`).
+Return the four triangular faces of a tetrahedron as sorted node-index triples. Sorting (via
+`face_key`) makes each key orientation-independent, so a face shared by two tetrahedra maps to the
+same key (the same face-map idiom used in `remove_isolated_components!`). Using `face_key` keeps
+this allocation-free, which matters because it runs once per solid tet in
+`resolve_surface_candidates!`.
 """
 function tetrahedron_faces(tet::Vector{Int64})
     a, b, c, d = tet[1], tet[2], tet[3], tet[4]
     return (
-        Tuple(sort([a, b, c])),
-        Tuple(sort([a, b, d])),
-        Tuple(sort([a, c, d])),
-        Tuple(sort([b, c, d])),
+        face_key(a, b, c),
+        face_key(a, b, d),
+        face_key(a, c, d),
+        face_key(b, c, d),
     )
 end
 
@@ -500,26 +518,21 @@ function resolve_surface_candidates!(
     retained = Vector{Vector{Int64}}()
     isempty(candidates) && return retained
 
-    # Build the face -> incidence-count map of the solid mesh. A candidate face "adjoins" the
-    # solid mesh exactly when it is present here (reuse of the remove_isolated_components! idiom).
-    solid_face_count = Dict{NTuple{3,Int},Int}()
-    for tet in solid_tets
-        for face in tetrahedron_faces(tet)
-            solid_face_count[face] = get(solid_face_count, face, 0) + 1
-        end
-    end
-
     # Dihedral-angle bounds. A quadruple-zero tet has all four vertices warped, so we use the
     # stricter NNZZ bounds from create_warping_params (currently 10 deg .. 140 deg).
     params = create_warping_params(scheme, mesh.grid_step)
     min_bound = params.nnzz.min_dihedral_angle
     max_bound = params.nnzz.max_dihedral_angle
 
+    # (1) Apply the cheap, adjacency-INDEPENDENT filter first: drop inverted or too-flat
+    # candidates, exactly as before. The raw A15 lattice tet is positively oriented and the
+    # per-cell map preserves orientation, so a warped tet with non-positive signed volume has
+    # been turned inside-out -> discard it (do NOT flip it); compute_dihedral_angle_range then
+    # rejects the too-flat survivors. Only the survivors reach the adjacency test below, and we
+    # record their four face keys while we have them.
+    survivors = Vector{Vector{Int64}}()
+    survivor_faces = Vector{NTuple{4,NTuple{3,Int}}}()
     for tet in candidates
-        # (1) Reject inverted or badly-shaped tets. The raw A15 lattice tet is positively
-        # oriented and the per-cell map preserves orientation, so a warped tet with non-positive
-        # signed volume has been turned inside-out -> discard it (do NOT flip it).
-        # compute_dihedral_angle_range then rejects the too-flat survivors.
         if !check_tetrahedron_orientation(mesh, tet)
             continue
         end
@@ -527,11 +540,40 @@ function resolve_surface_candidates!(
         if min_angle < min_bound || max_angle > max_bound
             continue
         end
+        push!(survivors, tet)
+        push!(survivor_faces, tetrahedron_faces(tet))
+    end
+    isempty(survivors) && return retained
 
-        # (2) Count how many of the four faces adjoin the solid mesh.
-        adjoining = 0
+    # (2) Count how many solid tets carry each survivor face. Seed the map with ONLY the
+    # survivors' faces (value 0), then make a SINGLE pass over the solid mesh incrementing just
+    # those faces. A candidate face "adjoins" the solid mesh exactly when some solid tet carries
+    # it (value >= 1) -- the same presence test the old code did with haskey() over a full-mesh
+    # map, except this Dict holds <= 4 * n_survivors entries instead of one per face of all ~2M
+    # solid tets (building that full map is what dominated the slice cost). Candidates are not in
+    # solid_tets, so a face shared by two candidates stays at 0 unless a solid tet also has it --
+    # matching the old behaviour exactly.
+    solid_face_count = Dict{NTuple{3,Int},Int}()
+    for faces in survivor_faces
+        for face in faces
+            solid_face_count[face] = 0
+        end
+    end
+    for tet in solid_tets
         for face in tetrahedron_faces(tet)
             if haskey(solid_face_count, face)
+                solid_face_count[face] += 1
+            end
+        end
+    end
+
+    # (3) Decide each survivor with the SAME rule as before: count how many of its four faces
+    # adjoin the solid mesh, then 4 -> retain, 0 -> discard (bubble), else centroid SDF sign.
+    for k in eachindex(survivors)
+        tet = survivors[k]
+        adjoining = 0
+        for face in survivor_faces[k]
+            if solid_face_count[face] >= 1
                 adjoining += 1
             end
         end
@@ -541,7 +583,7 @@ function resolve_surface_candidates!(
         elseif adjoining == 0
             continue                        # isolated bubble -> discard
         else
-            # (3) Ambiguous: keep only if the centroid lies inside the geometry (quartet's test).
+            # Ambiguous: keep only if the centroid lies inside the geometry (quartet's test).
             centroid =
                 (mesh.X[tet[1]] + mesh.X[tet[2]] + mesh.X[tet[3]] + mesh.X[tet[4]]) / 4.0
             if eval_sdf(mesh, centroid) < 0.0
