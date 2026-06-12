@@ -6,7 +6,6 @@ export generate_mesh!,
     slice_ambiguous_tetrahedra!,
     export_mesh_vtu,
     export_mesh_vtu_quality,
-    warp_node_to_isocontour!,
     remove_inverted_elements!,
     cleanup_unused_nodes!,
     create_INE!
@@ -17,13 +16,13 @@ using StaticArrays
 using LinearAlgebra
 using WriteVTK
 using Printf
+using ExactPredicates: orient   # Shewchuk's exact 3D orientation predicate
 
 using Implicit2TetMesh.Fundamentals
 
 include("Schemes/A15Scheme.jl")
-include("Schemes/SchlafliScheme.jl")
 include("TetGenerator.jl")
-include("NewCases-Experimental.jl")
+include("DihedralAngles.jl")
 include("Stencils.jl")
 include("ExportMesh.jl")
 

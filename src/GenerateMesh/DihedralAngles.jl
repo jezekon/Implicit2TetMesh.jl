@@ -1,71 +1,41 @@
 # ----------------------------
-# Warping safety parameters
+# Surface-tet acceptance parameters
 # ----------------------------
 
 """
-    CaseParams
+    DihedralBounds
 
-Safety parameters for a specific warping case (NNZZ or NZZZ).
+Acceptable interior dihedral-angle range (in degrees) for a retained surface
+("quadruple-zero") tetrahedron. A candidate whose minimum interior angle is below
+`min_dihedral_angle`, or whose maximum interior angle is above `max_dihedral_angle`,
+is too poorly shaped and gets discarded (Labelle §3.4 surface-tet quality test).
 
 # Fields
-- `threshold_distance::Float64`: Maximum distance of centroid from isosurface for warping
-- `max_node_displacement::Float64`: Maximum allowed node displacement during warping
-- `min_volume_ratio::Float64`: Minimum volume ratio relative to original element
 - `min_dihedral_angle::Float64`: Minimum allowed dihedral angle in degrees
 - `max_dihedral_angle::Float64`: Maximum allowed dihedral angle in degrees
 """
-struct CaseParams
-    threshold_distance::Float64
-    max_node_displacement::Float64
-    min_volume_ratio::Float64
+struct DihedralBounds
     min_dihedral_angle::Float64
     max_dihedral_angle::Float64
 end
 
 """
-    WarpingSafetyParams
+    create_warping_params(scheme::String) -> DihedralBounds
 
-Container for safety parameters for different warping cases.
-
-# Fields
-- `nnzz::CaseParams`: Parameters for NNZZ case (two nodes outside, two on surface)
-- `nzzz::CaseParams`: Parameters for NZZZ case (one node outside, three on surface)
-"""
-struct WarpingSafetyParams
-    nnzz::CaseParams
-    nzzz::CaseParams
-end
-
-"""
-    create_warping_params(scheme::String, grid_step::Float64) -> WarpingSafetyParams
-
-Create scheme-specific safety parameters for warping operations.
-
-NNZZ case (2 nodes warped) uses stricter parameters.
-NZZZ case (1 node warped) uses relaxed parameters.
+Return the scheme-specific dihedral-angle bounds used when deciding whether to keep a
+surface ("quadruple-zero") tetrahedron during slicing. Only "A15" is supported.
 
 # Arguments
-- `scheme::String`: Discretization scheme ("A15" or "Schlafli")
-- `grid_step::Float64`: Mesh grid step size
+- `scheme::String`: Discretization scheme (only "A15" is supported)
 
 # Returns
-- `WarpingSafetyParams`: Safety parameters for warping operations
+- `DihedralBounds`: the acceptable interior dihedral-angle range
 """
-function create_warping_params(scheme::String, grid_step::Float64)
-    if scheme == "A15"
-        base_threshold = 0.15 * grid_step
-        # NNZZ: Strict parameters (warping 2 nodes simultaneously)
-        nnzz = CaseParams(base_threshold, 0.2 * grid_step, 0.05, 10.0, 140.0)
-        # NZZZ: Relaxed parameters (warping only 1 node)
-        nzzz = CaseParams(2.0 * base_threshold, 0.4 * grid_step, 0.025, 10.0, 140.0)
-    elseif scheme == "Schlafli"
-        base_threshold = 0.3 * grid_step
-        nnzz = CaseParams(base_threshold, 0.4 * grid_step, 0.05, 10.0, 140.0)
-        nzzz = CaseParams(2.0 * base_threshold, 0.8 * grid_step, 0.025, 10.0, 140.0)
-    else
-        error("Unknown scheme: $scheme")
+function create_warping_params(scheme::String)
+    if scheme != "A15"
+        error("Unknown scheme: $scheme. Only 'A15' is supported.")
     end
-    return WarpingSafetyParams(nnzz, nzzz)
+    return DihedralBounds(10.0, 140.0)
 end
 
 """

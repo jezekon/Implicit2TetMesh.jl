@@ -14,11 +14,12 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
     # First check the SDF values of the current cell
     current_sdf_values = get_cell_sdf_values(mesh, i, j, k)
 
-    # If any value in the current cell is positive or close to zero, we definitely process the cell
-    if any(x -> x >= -tol, current_sdf_values)
+    # If any value in the current cell is negative or close to zero (inside or on the
+    # surface), we definitely process the cell.
+    if any(x -> x <= tol, current_sdf_values)
         # Continue with regular processing
     else
-        # All values in the current cell are negative - check neighboring cells
+        # All values in the current cell are positive (fully outside) - check neighboring cells
 
         # Define offsets for neighboring cells (direct neighbors in all directions)
         neighbor_offsets = [
@@ -30,8 +31,9 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
             (0, 0, -1),    # neighbors in z direction
         ] #TODO: select only relevant one
 
-        # Initialize a flag indicating that all neighboring cells have negative SDF values
-        all_neighbors_negative = true
+        # Initialize a flag indicating that all neighboring cells are fully outside
+        # (all SDF values positive under the phi < 0 = inside convention).
+        all_neighbors_outside = true
 
         # Check SDF values of neighboring cells
         for (di, dj, dk) in neighbor_offsets
@@ -43,18 +45,18 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
                 # Get SDF values for neighboring cell
                 neighbor_sdf = get_cell_sdf_values(mesh, ni, nj, nk)
 
-                # If any value in the neighboring cell has a positive or zero value,
-                # set the flag and end the check
-                if any(x -> x >= -tol, neighbor_sdf)
-                    all_neighbors_negative = false
+                # If any value in the neighboring cell is negative or zero (inside or on
+                # the surface), clear the flag and end the check
+                if any(x -> x <= tol, neighbor_sdf)
+                    all_neighbors_outside = false
                     break
                 end
             end
         end
 
-        # If all values in the current cell and all neighboring cells are negative,
+        # If the current cell and all neighboring cells are fully outside,
         # we can safely skip the cell
-        if all_neighbors_negative
+        if all_neighbors_outside
             return
         end
     end
@@ -93,68 +95,11 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
     @inbounds for tet in tetra_connectivity
         global_tet = [local_mapping[li] for li in tet]
 
-        # Get the coordinates of the tetrahedron vertices
-        tet_coords = [mesh.X[idx] for idx in global_tet]
-
-        # Directly evaluate SDF at each vertex position for maximum accuracy
-        # This is more accurate than using pre-computed values
-        tet_sdf = [eval_sdf(mesh, coord) for coord in tet_coords]
-
-        # Update the stored SDF values with these more accurate evaluations
-        for (i, idx) in enumerate(global_tet)
-            mesh.node_sdf[idx] = tet_sdf[i]
-        end
-
-        # Include tetrahedron only if at least one vertex is inside or on the boundary
-        if any(x -> x >= 0, tet_sdf)
-            push!(mesh.IEN, global_tet)
-        end
-    end
-end
-
-# ----------------------------
-# Function for discretizing a cell using Schlafli orthoscheme (unchanged logic, only minor type annotation changes)
-# ----------------------------
-function process_cell_Schlafli!(mesh::BlockMesh, i::Int, j::Int, k::Int)
-    tol = mesh.grid_tol
-    # Get SDF values at the 8 corners of the cell
-    sdf_values = get_cell_sdf_values(mesh, i, j, k)
-    if !any(x -> x >= -tol, sdf_values)
-        return
-    end
-
-    local_mapping = Dict{Int,Int}()
-    # Define cell nodes as SVectors from grid
-    cell_nodes = [
-        mesh.grid[i, j, k],     # Node 1: front-bottom-left
-        mesh.grid[i+1, j, k],       # Node 2: front-bottom-right
-        mesh.grid[i+1, j+1, k],       # Node 3: front-top-right
-        mesh.grid[i, j+1, k],       # Node 4: front-top-left
-        mesh.grid[i, j, k+1],     # Node 5: back-bottom-left
-        mesh.grid[i+1, j, k+1],     # Node 6: back-bottom-right
-        mesh.grid[i+1, j+1, k+1],     # Node 7: back-top-right
-        mesh.grid[i, j+1, k+1],      # Node 8: back-top-left
-    ]
-
-    @inbounds for li = 1:8
-        p = cell_nodes[li]
-        p_key = quantize(p, tol)
-        if haskey(mesh.node_hash, p_key)
-            local_mapping[li] = mesh.node_hash[p_key]
-        else
-            push!(mesh.X, p)
-            push!(mesh.node_sdf, sdf_values[li])
-            local_index = length(mesh.X)
-            local_mapping[li] = local_index
-            mesh.node_hash[p_key] = local_index
-        end
-    end
-
-    # Construct tetrahedra according to Schlafli scheme
-    @inbounds for tet in schlafli_tet_connectivity
-        global_tet = [local_mapping[li] for li in tet]
-        tet_sdf = [mesh.node_sdf[idx] for idx in global_tet]
-        if any(x -> x >= 0, tet_sdf)
+        # node_sdf was already filled with eval_sdf at node creation above (same point, same
+        # value), so reuse the cached value instead of re-evaluating the SDF once per incident
+        # tetrahedron -- every shared node would otherwise be evaluated many times over.
+        # Include the tetrahedron only if at least one vertex is inside or on the boundary.
+        if any(idx -> mesh.node_sdf[idx] <= 0, global_tet)
             push!(mesh.IEN, global_tet)
         end
     end
@@ -252,100 +197,203 @@ function generate_mesh!(mesh::BlockMesh, scheme::String)
             for k = 1:(mesh.nz-1)
                 if scheme == "A15"
                     process_cell_A15!(mesh, i, j, k)
-                elseif scheme == "Schlafli"
-                    process_cell_Schlafli!(mesh, i, j, k)
                 else
-                    error("Unknown scheme: $scheme")
+                    error("Unknown scheme: $scheme. Only 'A15' is supported.")
                 end
             end
         end
     end
 
     cleanup_unused_nodes!(mesh)
-    create_INE!(mesh)
+    # INE (inverse node-to-element connectivity) is NOT built here: warp! and the first
+    # update_connectivity! run before anything reads it, and every later topology change would
+    # invalidate it anyway. It is built once, by the final update_connectivity! (see
+    # generate_tetrahedral_mesh).
 end
 
 
-# Update warp_node_to_isocontour! to handle positions directly
-function warp_node_to_isocontour!(
+# ------------------------------------------------------------------
+# Cut-point location on a sign-crossing edge
+# ------------------------------------------------------------------
+"""
+    bisect_cut_alpha(mesh, Xi, Xj, phi_i, phi_j) -> Float64
+
+Fraction `alpha` in (0, 1) of the TRUE cut point on the segment `Xi -> Xj`, found by
+iterative bisection of the continuous cut function `eval_sdf` along the segment -- the
+reference cut-point computation of Labelle & Shewchuk 2007 (§3.1, their prototype).
+
+`phi_i`, `phi_j` must be valid bracket values of strictly opposite sign (the callers only
+reach this for sign-crossing edges whose endpoints are pristine lattice nodes, where the
+stored `node_sdf` equals `eval_sdf` exactly). 40 halvings resolve the cut point to
+~1e-12 of the edge length, so the result is deterministic and exact for all practical
+purposes. Cost: 40 `eval_sdf` calls per crossing edge (vs 0 for the linear estimate).
+
+This exists for inputs that are NOT distance-like (e.g. an RBF-smoothed field whose
+gradient collapses inside thin features): there the linear estimate
+`phi_i / (phi_i - phi_j)` can be off by a large fraction of the edge and the boundary
+visibly dents into the solid. On a true SDF both methods coincide (the field is linear
+along edges), which is why the LINEAR estimate stays the default everywhere (it keeps
+bit-identity with the quartet reference implementation).
+"""
+function bisect_cut_alpha(
     mesh::BlockMesh,
-    node_index::Int,
-    max_dist::Float64,
-    max_iter,
-)
-    tol = mesh.grid_tol
-    current_position = mesh.X[node_index]
-
-    for iter = 1:max_iter
-        f = eval_sdf(mesh, current_position)
-
-        # Early return if we're close enough to the isocontour
-        abs2(f) < tol * tol && break
-
-        grad = compute_gradient(mesh, current_position)
-        norm_grad_squared = sum(abs2, grad)
-
-        # Early return if gradient is too small
-        norm_grad_squared < 1e-16 && break
-
-        # Newton step
-        dp = (f / norm_grad_squared) * grad
-        current_position -= dp
-    end
-
-    norm_dist = norm(current_position .- mesh.X[node_index])
-
-    if norm_dist <= (max_dist * 2)
-        current_sdf = eval_sdf(mesh, current_position)
-        if abs(current_sdf) < tol*4
-            mesh.node_sdf[node_index] = 0.0
+    Xi::SVector{3,Float64},
+    Xj::SVector{3,Float64},
+    phi_i::Float64,
+    phi_j::Float64,
+)::Float64
+    lo = 0.0
+    hi = 1.0
+    flo = phi_i
+    for _ = 1:40
+        mid = 0.5 * (lo + hi)
+        fm = eval_sdf(mesh, Xi + mid * (Xj - Xi))
+        if (flo < 0) == (fm < 0)
+            lo = mid
+            flo = fm
         else
-            # println("current_sdf: ", current_sdf)
-            mesh.node_sdf[node_index] = current_sdf
+            hi = mid
         end
-        mesh.X[node_index] = current_position
     end
+    return 0.5 * (lo + hi)
 end
 
-# Main function for node warping - ordered warping
-#
-# First, nodes with positive SDF value (inside the isosurface) are adjusted, 
-# then nodes with negative values.
-# Nodes are moved toward the zero level of SDF (isosurface) and the displacement threshold 
-# is calculated as threshold_sdf = 0.5 * (length of the longest tetrahedral edge).
-function warp!(mesh::BlockMesh, scheme::String, max_iter::Int = 160)
-    # Calculate the longest edge and then the threshold for displacement
-    @info "Warping nodes to isocontour..."
-    if scheme == "A15"
-        threshold_sdf = 0.15 * mesh.grid_step
-    elseif scheme == "Schlafli"
-        threshold_sdf = 0.3 * mesh.grid_step
-    else
-        @error "Unknown scheme"
+"""
+    validate_cut_points(cut_points::Symbol)
+
+Shared argument check for the `cut_points` mode switch: `:linear` (quartet's endpoint-value
+estimate, the default) or `:bisection` (Labelle & Shewchuk §3.1 true cut point). The warp and
+the slicing MUST run in the same mode -- mixing them re-introduces the linear placement error
+through whichever half still uses it.
+"""
+function validate_cut_points(cut_points::Symbol)
+    cut_points === :linear || cut_points === :bisection ||
+        error("Invalid cut_points: $cut_points. Use :linear or :bisection.")
+end
+
+# ------------------------------------------------------------------
+# Edge-based warp to linear cut points (port of quartet warp_vertices)
+# ------------------------------------------------------------------
+"""
+    warp!(mesh, scheme; threshold = 0.3, cut_points = :linear)
+
+Snap lattice vertices onto the cut points of incident sign-crossing edges.
+
+For every tetrahedron edge `(i, j)` whose endpoints have strictly opposite SDF signs the
+isosurface crosses the edge at the cut point
+
+    X_cut = X_i + alpha * (X_j - X_i),   alpha in (0, 1),
+
+where `alpha` is located according to `cut_points`:
+  - `:linear`    (default) `alpha = phi_i / (phi_i - phi_j)`, quartet's estimate from the
+    endpoint values. Exact when the field is linear along the edge (true SDF); keeps
+    bit-identity with quartet's `warp_vertices`.
+  - `:bisection` the true zero of `eval_sdf` along the edge (`bisect_cut_alpha`,
+    Labelle & Shewchuk §3.1). Needed when the input field is NOT distance-like (e.g.
+    RBF-smoothed data): the linear estimate then misplaces vertices into the solid and the
+    flat walls come out dented. Must match the `cut_points` mode of
+    `slice_ambiguous_tetrahedra!`.
+
+If that cut point is close to an endpoint (`alpha < threshold` for `i`, or
+`alpha > 1 - threshold` for `j`), the endpoint is moved onto the cut point and its stored
+SDF is set to zero, i.e. the vertex is placed exactly on the surface. Each vertex is
+warped to its CLOSEST qualifying cut point (smallest `alpha * |edge|^2`, quartet's metric).
+Displacements are computed from the original positions and SDF values and applied all at
+once, so the result does not depend on vertex order.
+
+The vertex moves ALONG THE EDGE only (no Newton projection off the edge); that is what
+leaves the surrounding tetrahedra well shaped. With `:linear` this is a direct port of
+quartet's `warp_vertices` (make_tet_mesh.cpp:152-193); see Labelle 2007 §3.2.
+
+`threshold` is quartet's warp coefficient (must lie in `[0, 0.5]`) and is exposed so later
+stages can tune it. `scheme` is kept only for call-site compatibility: the warp operates on
+`mesh.IEN` / `mesh.node_sdf` and is identical for every scheme.
+"""
+function warp!(
+    mesh::BlockMesh,
+    scheme::String;
+    threshold::Float64 = 0.3,
+    cut_points::Symbol = :linear,
+)
+    @info "Warping vertices to edge cut points (threshold = $threshold, cut_points = $cut_points)..."
+    @assert 0.0 <= threshold <= 0.5 "warp threshold must lie in [0, 0.5]"
+    validate_cut_points(cut_points)
+
+    n = length(mesh.X)
+    # Best (closest) qualifying cut point found so far, per vertex.
+    best_metric = fill(Inf, n)                              # quartet's warp[] : alpha * |edge|^2
+    displacement = [zero(SVector{3,Float64}) for _ = 1:n]   # quartet's d[]    : vector onto the cut point
+    to_warp = falses(n)                                     # quartet's warp_nbr >= 0
+
+    # Visit every edge of every tetrahedron. Shared edges are visited several times,
+    # but keeping the per-vertex minimum makes the repetition harmless.
+    for tet in mesh.IEN
+        for u = 1:3
+            i = tet[u]
+            for v = (u+1):4
+                j = tet[v]
+                phi_i = mesh.node_sdf[i]
+                phi_j = mesh.node_sdf[j]
+
+                # Only strictly sign-crossing edges have an interior cut point.
+                if (phi_i < 0 && phi_j > 0) || (phi_i > 0 && phi_j < 0)
+                    # Fraction along the edge from i to the zero crossing, in (0, 1).
+                    alpha =
+                        cut_points === :bisection ?
+                        bisect_cut_alpha(mesh, mesh.X[i], mesh.X[j], phi_i, phi_j) :
+                        phi_i / (phi_i - phi_j)
+                    edge2 = sum(abs2, mesh.X[j] - mesh.X[i])
+
+                    if alpha < threshold
+                        # Cut point is close to i -> warp i toward j.
+                        metric = alpha * edge2
+                        if metric < best_metric[i]
+                            best_metric[i] = metric
+                            displacement[i] = alpha * (mesh.X[j] - mesh.X[i])
+                            to_warp[i] = true
+                        end
+                    elseif alpha > 1 - threshold
+                        # Cut point is close to j -> warp j toward i.
+                        metric = (1 - alpha) * edge2
+                        if metric < best_metric[j]
+                            best_metric[j] = metric
+                            displacement[j] = (1 - alpha) * (mesh.X[i] - mesh.X[j])
+                            to_warp[j] = true
+                        end
+                    end
+                end
+            end
+        end
     end
 
-    # First pass: nodes with positive SDF value (inside)
-    for i = 1:length(mesh.X)
-        sdf = mesh.node_sdf[i]
-        if sdf > 0 && abs(sdf) < threshold_sdf
-            warp_node_to_isocontour!(mesh, i, threshold_sdf, max_iter)
+    # Apply all warps at once: move the vertex onto the surface and mark it as on it.
+    warped_count = 0
+    for v = 1:n
+        if to_warp[v]
+            mesh.X[v] = mesh.X[v] + displacement[v]
+            mesh.node_sdf[v] = 0.0
+            warped_count += 1
         end
     end
-    # Second pass: nodes with negative SDF value (outside)
-    for i = 1:length(mesh.X)
-        sdf = mesh.node_sdf[i]
-        if sdf < 0 && abs(sdf) < threshold_sdf
-            warp_node_to_isocontour!(mesh, i, threshold_sdf, max_iter)
-        end
-    end
-    #TODO:Warp only one node from element wich is close to boundary (now it warps every node which is close enough)
+    println("  Warped $warped_count vertices onto the isosurface")
 end
 
 # ---------------------------------------------------
-# Function: Update mesh topology (mesh.X, mesh.IEN, mesh.INE)
+# Function: Update mesh topology (mesh.X, mesh.IEN, and optionally mesh.INE)
 # ---------------------------------------------------
-function update_connectivity!(mesh::BlockMesh)
+"""
+    update_connectivity!(mesh::BlockMesh; build_ine::Bool = true)
+
+Refresh the mesh connectivity after a topology change: compact unused nodes, merge duplicate
+nodes, and (by default) rebuild the inverse node-to-element connectivity `mesh.INE`.
+
+`build_ine` lets a caller skip the `mesh.INE` rebuild when the inverse connectivity is not needed
+yet. Nothing in the generation pipeline reads `INE`, and every topology step would invalidate it,
+so the core pipeline rebuilds it only once -- on the final call -- and passes `build_ine = false`
+on the earlier calls. The default `true` preserves the original behaviour for every other caller.
+"""
+function update_connectivity!(mesh::BlockMesh; build_ine::Bool = true)
     cleanup_unused_nodes!(mesh)        # Recalculates mesh.X, mesh.node_sdf and reindexes mesh.IEN and mesh.node_map
     merge_duplicate_nodes!(mesh)       # Merges duplicate nodes and adjusts connectivity in mesh.IEN
-    create_INE!(mesh)                  # Creates inverse connectivity (mesh.INE)
+    build_ine && create_INE!(mesh)     # Inverse connectivity (mesh.INE); skipped when not needed yet
 end

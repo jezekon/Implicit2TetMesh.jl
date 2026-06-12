@@ -41,10 +41,9 @@ plane_definitions = [
 # 3. Warp nodes to isosurface (SDF = 0)
 # 4. Slice ambiguous elements crossing the boundary
 # 5. Apply boundary plane constraints
-# 6. Correct mesh volume to match reference geometry
-# 7. Export mesh to VTU format for visualization
+# 6. Export mesh to VTU format for visualization
 
-const DATA_DIR = "data/gripper"
+const DATA_DIR = joinpath(@__DIR__, "..", "data", "gripper")
 grid_file = joinpath(DATA_DIR, "Z_robot_gripper_HEX8_FineGrid_B-2.0085_smooth-1.jld2")
 sdf_file = joinpath(DATA_DIR, "Z_robot_gripper_HEX8_FineSDF_B-2.0085_smooth-1.jld2")
 
@@ -63,10 +62,8 @@ mesh = generate_tetrahedral_mesh(
         # ------------------------------------------------------------------
         # scheme: Tetrahedral discretization scheme
         # ------------------------------------------------------------------
-        # "A15"      - A15 lattice structure (27 nodes per unit cell, 46 tets)
-        #              Better surface representation, recommended for most cases
-        # "Schlafli" - Schlafli orthoscheme (8 nodes per unit cell, 6 tets)
-        #              Simpler structure, fewer elements
+        # "A15" - A15 lattice structure (27 nodes per unit cell, 46 tets).
+        #         Currently the only supported scheme.
         scheme = "A15",
 
         # ------------------------------------------------------------------
@@ -90,24 +87,6 @@ mesh = generate_tetrahedral_mesh(
         #   - Defining load application surfaces
         #   - Enforcing symmetry planes
         plane_definitions = plane_definitions,
-
-        # ------------------------------------------------------------------
-        # correct_volume: Enable volume correction (true/false)
-        # ------------------------------------------------------------------
-        # true  - Adjusts surface node positions to match the reference volume
-        #         from SDF data using a bisection method. Improves geometric
-        #         accuracy at the cost of computation time (~20 iterations).
-        # false - Skip volume correction (faster, less accurate)
-        correct_volume = true,
-
-        # ------------------------------------------------------------------
-        # experimental_nzzz: Enable experimental NZZZ case warping
-        # ------------------------------------------------------------------
-        # Controls handling of elements with 1 negative + 3 zero SDF nodes:
-        # true  - Uses relaxed safety parameters for NZZZ case warping
-        #         (may improve surface quality but less conservative)
-        # false - Conservative mode, discards NZZZ elements (safer, default)
-        experimental_nzzz = true,
     ),
 )
 
@@ -122,7 +101,6 @@ mesh = generate_tetrahedral_mesh(
 #
 # 2. tet_chapadlo_B-2.0_TriMesh-A15_cut.vtu (if plane_definitions are provided)
 #    - Mesh with nodes warped to boundary planes
-#    - Volume-corrected if correct_volume = true
 #
 # The returned 'mesh' object (BlockMesh type) contains:
 #   mesh.X        - Node coordinates (Vector{SVector{3,Float64}})
@@ -137,7 +115,6 @@ mesh = generate_tetrahedral_mesh(
 # - Number of nodes and elements at each stage
 # - Volume statistics and problematic elements
 # - Surface node warping results
-# - Volume correction convergence (if enabled)
 # - Inverted element detection and fixing
 
 # ------------------------------------------------------------------------------

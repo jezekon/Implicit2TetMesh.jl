@@ -18,9 +18,9 @@ Calculates volume of geometry defined by SDF iso-surface.
 - Volume of the geometry
 
 # Description
-For each grid element:
-1. Skip if outside iso-surface (all SDF values < threshold)
-2. Add full volume if inside iso-surface (all SDF values ≥ threshold)
+Assumes the phi < 0 = inside convention. For each grid element:
+1. Skip if outside iso-surface (all SDF values > threshold)
+2. Add full volume if inside iso-surface (all SDF values ≤ threshold)
 3. Use quadrature for partial elements intersecting the iso-surface
 """
 function calculate_volume_from_sdf(
@@ -69,12 +69,12 @@ function calculate_volume_from_sdf(
                 max_value = max(c000, c100, c010, c110, c001, c101, c011, c111)
 
                 # Skip element if completely outside the iso-surface
-                if max_value < iso_threshold
+                if min_value > iso_threshold
                     continue
                 end
 
                 # If element is completely inside the iso-surface, add its full volume
-                if min_value >= iso_threshold
+                if max_value <= iso_threshold
                     atomic_add!(total_volume, element_volume)
                     continue
                 end
@@ -107,7 +107,7 @@ function calculate_volume_from_sdf(
                             point_sdf = c0 * (1.0f0 - zeta) + c1 * zeta
 
                             # Add contribution only if point is inside (or on) the iso-surface
-                            if point_sdf >= iso_threshold
+                            if point_sdf <= iso_threshold
                                 weight = w[iq] * w[jq] * w[kq]
                                 element_volume_partial += weight * jacobian_det
                             end
@@ -121,5 +121,69 @@ function calculate_volume_from_sdf(
         end
     end
 
+    return total_volume[]
+end
+
+"""
+    calculate_volume_from_sdf(source::UnstructuredSDF; iso_threshold=0.0,
+                              quad_order=9) -> Float64
+
+Volume of the solid region (`phi <= iso_threshold`) of an unstructured HEX8 field --
+the per-source counterpart of the structured array method above (Etapa 8). The field
+inside each hex is the trilinear FE shape-function interpolation, which is a convex
+combination of the 8 nodal values, so an element is fully solid when all its nodal
+values are `<= iso_threshold` and fully void when all are `> iso_threshold`. Those two
+cases are handled in closed form (`hex_volume` is exact for the trilinear map); only
+boundary elements are integrated:
+
+  - fully solid  -> add `hex_volume(X)`;
+  - fully void   -> skip;
+  - boundary     -> `quad_order^3` Gauss-Legendre points; add `w * |det J|` at each
+    point whose interpolated field is `<= iso_threshold`.
+
+`quad_order` controls only how finely the cut surface is resolved inside a boundary
+element (the integrand is a step function there); it defaults to 9 to match the
+structured method.
+"""
+function calculate_volume_from_sdf(
+    source::UnstructuredSDF;
+    iso_threshold::Float64 = 0.0,
+    quad_order::Int = 9,
+)
+    quad_order >= 1 || error("calculate_volume_from_sdf: quad_order must be >= 1, got $quad_order")
+    gp, w = FastGaussQuadrature.gausslegendre(quad_order)
+
+    total_volume = Atomic{Float64}(0.0)
+    @threads for e = 1:length(source.hexes)
+        hx = source.hexes[e]
+        X = ntuple(a -> source.nodes[hx[a]], 8)
+        pv = ntuple(a -> source.phi[hx[a]], 8)
+        mn, mx = extrema(pv)
+
+        # Fully void: every interior value exceeds the threshold.
+        mn > iso_threshold && continue
+
+        # Fully solid: the whole element is below the threshold -> exact hex volume.
+        if mx <= iso_threshold
+            atomic_add!(total_volume, hex_volume(X))
+            continue
+        end
+
+        # Boundary element: integrate the indicator of {phi <= iso} times |det J|.
+        partial = 0.0
+        for kq = 1:quad_order, jq = 1:quad_order, iq = 1:quad_order
+            xi = SVector(gp[iq], gp[jq], gp[kq])
+            N = hex8_shape(xi)
+            phi_q = 0.0
+            for a = 1:8
+                phi_q += N[a] * pv[a]
+            end
+            if phi_q <= iso_threshold
+                _, J = hex8_map_and_jacobian(X, xi)
+                partial += w[iq] * w[jq] * w[kq] * abs(det(J))
+            end
+        end
+        atomic_add!(total_volume, partial)
+    end
     return total_volume[]
 end

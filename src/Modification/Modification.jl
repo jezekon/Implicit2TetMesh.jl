@@ -7,7 +7,6 @@ export BoundedPlane,
     Square,
     Circle,
     Ellipse,
-    correct_mesh_volume!,
     remove_isolated_components!
 
 using StaticArrays
@@ -19,7 +18,6 @@ using Implicit2TetMesh.GenerateMesh
 
 include("CuttingPlaneTypes.jl")
 include("ModifyResultingMesh.jl")
-include("CorrectMeshVolume.jl")
 include("RemoveIsolatedComponents.jl")
 
 end
