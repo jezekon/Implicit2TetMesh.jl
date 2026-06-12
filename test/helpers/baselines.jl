@@ -17,8 +17,8 @@
 # ------------------------------------------------------------------------------
 # Beam, no cutting planes (final pipeline output; also the per-stage Stage 5 result)
 # ------------------------------------------------------------------------------
-const BEAM_NODES = 22370          # length(mesh.X)
-const BEAM_TETS = 92532           # length(mesh.IEN)
+const BEAM_NODES = 22385          # length(mesh.X)
+const BEAM_TETS = 92675           # length(mesh.IEN)
 
 # Dihedral histogram (min/max in degrees rounded to 3 decimals; counts exact):
 const BEAM_DIH = (
@@ -37,8 +37,8 @@ const BEAM_DIH = (
 # so more crossing-edge cuts survive (more tets) and the sliver-producing
 # misplaced cut vertices disappear (better dihedral extremes).
 # ------------------------------------------------------------------------------
-const BEAM_BISECT_NODES = 22742   # length(mesh.X)
-const BEAM_BISECT_TETS = 94594    # length(mesh.IEN)
+const BEAM_BISECT_NODES = 22746   # length(mesh.X)
+const BEAM_BISECT_TETS = 94640    # length(mesh.IEN)
 
 const BEAM_DIH_BISECT = (
     min = 14.607,                 # smallest dihedral angle
@@ -59,7 +59,7 @@ const BEAM_DIH_BISECT = (
 # mode = :uniform (DistMesh size-equalizing springs): the surface re-projects onto the
 # trilinear zero and sizes equalize, clearing every cap (gt140 81 -> 0).
 const BEAM_RELAX_UNIFORM_DIH = (
-    min = 18.374,                 # smallest dihedral angle (was 11.276)
+    min = 18.373,                 # smallest dihedral angle (was 11.276)
     max = 131.616,                # largest dihedral angle  (was 153.211)
     lt5 = 0,
     lt10 = 0,
@@ -81,8 +81,8 @@ const BEAM_RELAX_QUALITY_DIH = (
 # mode = :uniform, sizing = :curvature (mild element concentration where the surface
 # bends; Persson 2006 gradient-limited h-field). Close to plain :uniform on the beam.
 const BEAM_RELAX_CURVATURE_DIH = (
-    min = 18.495,
-    max = 132.936,
+    min = 18.468,
+    max = 132.999,
     lt5 = 0,
     lt10 = 0,
     gt140 = 0,
@@ -93,14 +93,14 @@ const BEAM_RELAX_CURVATURE_DIH = (
 # Beam, two cutting planes (Square(30) @ x=0, Square(5) @ x=60, warp_param 0.3).
 # The plane warp only moves nodes, so the counts equal the no-planes mesh.
 # ------------------------------------------------------------------------------
-const BEAM_CUT_NODES = 22370      # length(mesh.X) after the plane cut
-const BEAM_CUT_TETS = 92532       # length(mesh.IEN) after the plane cut
+const BEAM_CUT_NODES = 22385      # length(mesh.X) after the plane cut
+const BEAM_CUT_TETS = 92675       # length(mesh.IEN) after the plane cut
 
 # ------------------------------------------------------------------------------
 # Gripper, no cutting planes (opt-in: set I2TM_TEST_GRIPPER=1)
 # ------------------------------------------------------------------------------
 const GRIPPER_NODES = 414072      # length(mesh.X)
-const GRIPPER_TETS = 1984316      # length(mesh.IEN)
+const GRIPPER_TETS = 1984321      # length(mesh.IEN)
 
 const GRIPPER_DIH = (
     min = 9.537,                  # smallest dihedral angle

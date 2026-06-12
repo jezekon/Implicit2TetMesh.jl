@@ -514,14 +514,17 @@ following Labelle's surface-fidelity heuristic (isosurface-stuffing paper, §3.4
 
   1. Discard a candidate that is inverted, or whose dihedral angles fall outside the [min, max]
      bounds -- such tetrahedra are too flat to improve surface fidelity.
-  2. Of the well-shaped survivors, count how many of the four faces adjoin the solid mesh:
-       * all four faces adjoin  -> RETAIN  (the tet fills a tetrahedral pocket in the boundary);
-       * no face adjoins        -> DISCARD (an isolated "bubble");
-       * otherwise              -> decide by the SDF sign at the centroid (inside -> keep).
+  2. Of the well-shaped survivors, retain one whose four faces ALL adjoin the solid mesh (it
+     fills a tetrahedral pocket in the boundary); decide every other survivor by the SDF sign
+     at its centroid (inside -> keep), quartet's `remove_exterior_tets` rule.
 
-This is a principled superset of quartet's `remove_exterior_tets` (which uses only the centroid
-test) and is the PRIMARY mechanism for removing bubbles; `remove_isolated_components!` is left
-afterwards only as a safety net that should now find almost nothing.
+There is deliberately NO "no face adjoins -> discard" rule: face adjacency is counted against
+SOLID tets only, so an interior member of a CLUSTER of quadruple-zero tetrahedra (its faces
+shared only with other candidates) reads as adjoining nothing even though the cluster adjoins
+the solid mesh through its outer members. Discarding such tets carved tet-shaped holes below
+the phi = 0 surface into flat lattice-aligned walls. A genuinely floating bubble that survives
+the centroid test is face-disconnected from the main component, and the
+`remove_isolated_components!` pass that runs right after removes it.
 
 # Arguments
 - `mesh::BlockMesh`: provides vertex coordinates and the SDF (read-only here)
@@ -590,8 +593,10 @@ function resolve_surface_candidates!(
         end
     end
 
-    # (3) Decide each survivor with the SAME rule as before: count how many of its four faces
-    # adjoin the solid mesh, then 4 -> retain, 0 -> discard (bubble), else centroid SDF sign.
+    # (3) Decide each survivor: a tet whose four faces all adjoin the solid mesh fills a pocket
+    # and is retained outright; everything else is decided by the centroid SDF sign (quartet's
+    # remove_exterior_tets rule). adjoining == 0 gets NO special treatment -- it cannot tell an
+    # exterior bubble from the interior of a quadruple-zero cluster (see the docstring).
     for k in eachindex(survivors)
         tet = survivors[k]
         adjoining = 0
@@ -603,10 +608,8 @@ function resolve_surface_candidates!(
 
         if adjoining == 4
             push!(retained, tet)            # fills a tetrahedral pocket -> keep
-        elseif adjoining == 0
-            continue                        # isolated bubble -> discard
         else
-            # Ambiguous: keep only if the centroid lies inside the geometry (quartet's test).
+            # Keep only if the centroid lies inside the geometry (quartet's test).
             centroid =
                 (mesh.X[tet[1]] + mesh.X[tet[2]] + mesh.X[tet[3]] + mesh.X[tet[4]]) / 4.0
             if eval_sdf(mesh, centroid) < 0.0
