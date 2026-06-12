@@ -70,3 +70,21 @@ const GRIPPER_DIH = (
     gt140 = 1136,                 # dihedral angles > 140 deg
     inverted = 0,                 # tets with non-positive float signed volume
 )
+
+# ------------------------------------------------------------------------------
+# Etapa 8 -- genuinely-unstructured analytic sphere. A graded + interior-jittered
+# conforming HEX8 block on [0,4]^3 (seed 7) carries the analytic field phi = |x-c|-r
+# with c=(2,2,2), r=1.2; it is meshed through the FE path on a structured lattice
+# (dx=0.15, padding 2, cut_points=:bisection). There is NO quartet oracle for
+# unstructured inputs, so these are frozen from a verified-good run and re-freezable
+# like the others. Counts are a sharp regression signal; the quality FLOOR and the
+# geometric fidelity to the TRUE sphere are the meaningful correctness checks.
+# (|eval_sdf| on the boundary is NOT ~0 here -- unlike the structured paths -- because
+# this graded+jittered hex block is not a perfect tiling: warped HEX8 faces overlap by
+# ~1e-5, so a boundary cut point sits strictly inside >1 element with different values.
+# A property of the distorted input, not a defect; see test/test_sdf_sources.jl.)
+# ------------------------------------------------------------------------------
+const SPHERE_U_NODES = 19694      # length(mesh.X)
+const SPHERE_U_TETS = 99538       # length(mesh.IEN)
+const SPHERE_U_GEO_FIDELITY = 0.05  # max boundary-vertex distance to |x-c|=r (meas. 0.0352)
+const SPHERE_U_VOL_RELERR = 0.07    # |tet volume - 4/3 pi r^3| / (4/3 pi r^3) (meas. 0.0516)

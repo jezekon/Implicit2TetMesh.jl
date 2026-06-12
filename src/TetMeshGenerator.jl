@@ -83,9 +83,34 @@ function generate_tetrahedral_mesh(
     @load grid_file fine_grid
     @load sdf_file fine_sdf
 
-    # Initialize mesh structure from SDF data
+    # Initialize the mesh from structured grid input, then run the shared pipeline.
     mesh = BlockMesh(fine_sdf, fine_grid)
+    return generate_tetrahedral_mesh(mesh, output_prefix; options = options)
+end
 
+"""
+    generate_tetrahedral_mesh(mesh::BlockMesh, output_prefix="output";
+                              options=MeshGenerationOptions())
+
+Run the full meshing pipeline on a pre-built [`BlockMesh`](@ref) and return it. This
+is the source-agnostic entry point (Etapa 8): it is shared by the structured
+file-based method above and is the way to mesh an UNSTRUCTURED HEX8 field --
+
+```julia
+src  = simp_to_sdf_source(nodes, hexes, densities)   # or levelset_to_sdf_source(...)
+mesh = BlockMesh(src; dx = 1.0)                       # samples a structured lattice
+mesh = generate_tetrahedral_mesh(mesh, "part")        # same pipeline, same output contract
+```
+
+The pipeline (A15 fill -> warp -> slice -> drop inverted -> keep largest component ->
+final connectivity refresh, then optional cutting planes) only reads the field through
+`eval_sdf`, so it is identical for both input kinds; only `mesh.sdf_source` differs.
+"""
+function generate_tetrahedral_mesh(
+    mesh::BlockMesh,
+    output_prefix::String = "output";
+    options::MeshGenerationOptions = MeshGenerationOptions(),
+)
     # Generate base tetrahedral mesh using selected discretization scheme
     generate_mesh!(mesh, options.scheme)
 

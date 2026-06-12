@@ -141,6 +141,10 @@ end
     # testset and exports a VTU after each phase to test/output/).
     include(joinpath(@__DIR__, "test_beam_stages.jl"))
 
+    # Etapa 8 -- pluggable SDF sources: unit checks, the beam round-trip through the
+    # unstructured HEX8 path, and a genuinely-unstructured analytic sphere.
+    include(joinpath(@__DIR__, "test_sdf_sources.jl"))
+
     @testset "Gripper (opt-in)" begin
         if get(ENV, "I2TM_TEST_GRIPPER", "0") != "1"
             @info "Gripper suite skipped -- set I2TM_TEST_GRIPPER=1 to run it."
