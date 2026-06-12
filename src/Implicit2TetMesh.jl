@@ -23,6 +23,7 @@ include("TetMeshGenerator.jl")
 
 # Exports from module Modification:
 export PlaneDefinition, Rectangle, Square, Circle, Ellipse
+export RelaxOptions, relax_mesh!
 
 # Exports from main module:
 export MeshGenerationOptions, generate_tetrahedral_mesh

@@ -21,6 +21,18 @@
   • Volume correction — REMOVED (c224f05); the pipeline has no correct_mesh_volume! step, so any
     "compare before correct_mesh_volume!" note below is moot.
   • Etapa 9 — only the prompt text lives in this file (12e9bc9); no code yet.
+  • Etapa 10 (gated mesh relaxation: :uniform size-equalizing springs + :quality quartet-style
+    maximin smoothing, one switch, fixed topology, default OFF) — DONE 2026-06-12 (uncommitted at
+    time of writing; src/Modification/RelaxMesh.jl, wired into MeshGenerationOptions.relax). DESIGN
+    DEVIATION from this prompt, approved by results: the gate metric is a TWO-SIDED check on the
+    dihedral-angle cosines (sharpest angle may not sharpen AND widest may not widen), NOT the eta
+    mean-ratio the prompt suggested for :uniform — eta does not bound the dihedral, so it would not
+    make "min dihedral >= pre-pass" a true construction; the two-sided cosine gate makes BOTH "min
+    does not drop" and "max does not grow" hard guarantees for both modes. Results (default
+    :uniform): beam min 11.28->18.37, max 153.21->131.62, >140 81->0; gripper min 9.54->12.35,
+    <10 11->0, >140 1136->91. OFF path byte-identical (2392/2392 default, 2416/2416 +gripper).
+    Determinism verified. Timing ~1s beam, ~12-15s gripper (thin walls -> ~2/3 of nodes in band).
+    Independent of Etapas 6-7/9; needs 1-5 + 8.
   • CURRENT FOCUS: **Stabilization / review** before Phase 2 — close the audit's Part B (dead code,
     never executed; only Part C was). Confirmed candidates: orphan src/Fundamentals/Hex8_shape.jl
     (not include-d, shape_functions unreferenced); compute_gradient (Newton-warp leftover, no caller,
@@ -840,4 +852,155 @@ VERIFY: feature OFF -> beam/gripper byte-identical to Etapa-8. Protection ON -> 
 the freeze-set. If smoothing is added: FE volume mesh unchanged, only the exported AM surface differs;
 report compliance impact (the paper saw ~2% on the GE bracket). CLOSEOUT as usual (README: document
 it as optional, default OFF, a scope expansion beyond the isosurface-stuffing core).
+````
+
+---
+
+## Etapa 10 — Gated mesh relaxation & quality optimization (OPTIONAL post-pass; fixed topology)  ✅ DONE (awaiting review)
+
+````text
+ETAPA 10 — Optional gated vertex relaxation: mode :uniform (size equalization, "springs") and
+mode :quality (quartet-style maximin smoothing), behind one shared skeleton and one user switch.
+(OPTIONAL, default OFF. Depends on Etapas 1-5 + 8 (final INE build, eval_sdf seam, exact
+predicates, pluggable sources); INDEPENDENT of Etapas 6-7 and 9 — may be done before them.
+FORWARD-COMPAT: this pass MOVES nodes, so when Etapa 9's functional-surface freeze-sets land,
+relaxation MUST consult them; design the freeze-set as an input parameter from day one.)
+
+MOTIVATION: the A15 interior is already uniform and near-optimal by construction; ALL element-size
+variance and ALL bad dihedral angles live in the 1-2 element layers created by warp + trim. Two
+different (sometimes conflicting) post-processing objectives follow:
+  • :uniform — equalize edge lengths near the boundary (FE users want similar-sized elements);
+  • :quality — actively lift the worst dihedral angles (gripper today: min 9.537°, 11 tets <10°,
+    1136 >140° — those tails are the target).
+Both fit one skeleton: PROPOSE a new vertex position -> GATE it on local element quality ->
+PROJECT surface vertices back to phi = 0. They differ only in the proposal generator.
+
+DECISIONS ALREADY MADE (do not re-litigate):
+  • FIXED TOPOLOGY ONLY: vertex relocation, never flips/collapses/insertions (Stellar / CGAL
+    tetrahedral remeshing are out of scope — they would break the watertight trim structure,
+    determinism, and the runtime budget).
+  • DEFAULT OFF. With relaxation off, beam/gripper output stays byte-identical; the quartet
+    cross-validation oracle is only ever compared with relaxation off.
+  • Surface vertices STAY ON phi = 0 at all times: tangential proposal + re-projection by
+    BISECTION ALONG THE VERTEX PSEUDO-NORMAL. NEVER project along the SDF gradient (quartet does;
+    it only works for true distance fields — ours may be SIMP/level-set; compute_gradient was
+    deleted in audit Part B, do NOT re-add it). This is NOT a volume corrector: it never moves
+    nodes off the zero level (the removed correct_mesh_volume! failure mode), so the README
+    volume-accuracy contract stays intact. Volume changes only by chord redistribution.
+  • DETERMINISTIC: no rand() (quartet's optimizer uses rand — do not port that). Fixed-order
+    Gauss-Seidel sweeps (or Jacobi), fixed candidate patterns. Same input -> same output, so
+    relaxed baselines can be frozen in test/helpers/baselines.jl.
+  • The gate makes safety a CONSTRUCTION, not a hope: the current position is always a candidate,
+    an accepted move never lowers the local min quality => global min quality is monotonically
+    non-decreasing => "min dihedral >= pre-pass" is a HARD testable assertion.
+
+BEFORE STARTING: follow the common-context checklist. Read:
+  • Literature/quartet-original/src/optimize_tet_mesh.cpp (the whole file, ~265 live lines) — the
+    in-family precedent: per-vertex candidate set incl. the original point, maximin over incident
+    tets, tie -> smallest move, interior/boundary/feature vertex classes, early stop;
+    tet_quality.cpp (min-sine-of-dihedral metric, orientation-signed) and sdf.cpp
+    projectToIsosurface (bracket clamped to +-dx — keep the clamping idea, replace gradient with
+    pseudo-normal).
+  • Published basis to confirm and cite in the opening report: Persson & Strang 2004 "A Simple
+    Mesh Generator in MATLAB" (DistMesh spring force = the :uniform proposal); Persson 2006 "Mesh
+    size functions for implicit geometries and PDE-based gradient limiting" (curvature sizing +
+    |grad h| <= g); Freitag 1997 (smart Laplacian = propose-then-gate); Thürmer & Wüthrich 1998 /
+    Bærentzen & Aanæs 2005 (angle-weighted pseudo-normals).
+  • src/Modification/ModifyResultingMesh.jl find_surface_nodes / surface_faces (count==1 boundary
+    extraction to reuse) and Stencils.jl is_positively_oriented (the ONLY orientation check to
+    use; remember ExactPredicates.orient's sign is OPPOSITE the float det).
+
+IMPLEMENT (new file src/Modification/RelaxMesh.jl, exported relax_mesh!(mesh, opts); explicit
+loops + English docstrings per CODE STYLE):
+  • RelaxOptions struct (all defaults are starting points — tune while measuring):
+      mode::Symbol = :uniform | :quality
+      max_sweeps::Int (10), tol: stop when max displacement < 1e-2*grid_step (:uniform) or when
+        min quality stops improving (:quality, quartet's early-stop idea)
+      band::Int = 2 — active set = surface vertices + `band` topological rings inward (the A15
+        interior is already optimal; band = typemax(Int)/:all as an override for experiments)
+      omega::Float64 = 0.3 (:uniform step factor)
+      sizing::Symbol = :uniform | :curvature (only meaningful for mode = :uniform), with
+        curvature params: alpha, h_min/h_max clamps, grading g = 0.3
+      frozen::AbstractVector{Int} = [] — externally supplied freeze-set (Etapa 9 hook)
+    Wire into MeshGenerationOptions as relax::Union{RelaxOptions,Nothing} = nothing (OFF).
+  • Shared infrastructure (built once per call):
+      - boundary triangulation: faces with incidence 1 (reuse the count==1 pattern);
+      - angle-weighted pseudo-normals at surface vertices from that triangulation;
+      - FREEZE: vertices on non-manifold boundary edges (pinches — thin-feature sheets, see
+        watertightness lore: their pseudo-normal is meaningless), vertices in opts.frozen, and
+        anything outside the active band;
+      - vertex->neighbor lists from IEN restricted to the band (INE already exists — the pass
+        runs after the final update_connectivity!, and since topology never changes, INE, IEN
+        and the boundary triangulation stay VALID throughout; only positions move).
+  • The GATE (shared by both modes): a candidate position x' for vertex v is accepted only if
+    over all tets incident to v (via INE): (a) is_positively_oriented holds for every tet (exact
+    sign, no tolerance), (b) min quality does not decrease vs the current position, and (c) for
+    INTERIOR vertices eval_sdf(mesh, x') < 0 (a relaxed interior node must stay strictly inside;
+    keeps the node-SDF invariant meaningful and protects thin features). On failure try step
+    s in {1, 1/2, 1/4} (:uniform), else keep the current position.
+  • mode :uniform (the springs): proposal d_v = omega * sum_j (x_j - x_v) * (1 - L0/|e_vj|)
+    over neighbor edges — compression for short edges, tension for long ones; equilibrium =
+    uniform lengths (DistMesh force). L0 = median active-band edge length (sizing = :uniform).
+    SURFACE vertices: neighbors = surface neighbors only (boundary triangulation), project the
+    proposal into the tangent plane (d -= (d.n)n with n = pseudo-normal), apply, then re-project
+    onto phi = 0 by bisection of eval_sdf along the pseudo-normal, bracket clamped to
+    +-0.5 * local edge length (avoid jumping to the opposite sheet of a thin wall); the vertex's
+    node_sdf stays exactly 0.0 by construction. Gate metric: mean ratio
+    eta = 12 * (3V)^(2/3) / sum(l^2) (cheap, no trig; 1.0 = regular tet), sign from (a).
+  • mode :quality (quartet, deterministically): candidate set per vertex = current position +
+    a FIXED pattern — interior: 8 cube corners + 6 axis points at radius P = 0.5*grid_step, plus
+    the same 14 at P/2; surface: the analogous 2D pattern (4 corners + 4 axes at P and P/2) in
+    the tangent plane, each candidate re-projected to phi = 0 via the SAME bisection helper.
+    Score = min over incident tets of MIN-SINE-OF-DIHEDRAL (quartet's metric — it is exactly the
+    quantity our histograms report, so improvements are directly visible); pick the argmax,
+    tie -> smallest displacement (quartet's tie-break). The gate is built in (current position
+    competes). sizing/L0 plays no role in this mode.
+  • Pipeline placement (TetMeshGenerator.jl): after remove_isolated_components! + the final
+    update_connectivity! (INE just built), BEFORE TetMesh_volumes/export and BEFORE the optional
+    warp_mesh_by_planes_sdf! (plane alignment must run last so it is not un-done; until Etapa 9
+    lands, plane-region nodes are simply re-aligned afterwards as today).
+  • Bookkeeping (easy to forget):
+      - refresh node_sdf for every MOVED interior vertex (node_sdf[v] = eval_sdf(mesh, X[v]));
+        surface vertices keep 0.0;
+      - mesh.node_hash / node_map are coordinate-keyed merge artifacts — verify nothing consumes
+        them after this stage (they are connectivity-merge tools); document, or empty! them;
+      - count accepted/rejected moves and report per sweep (like warp!'s "Warped N vertices").
+  • sizing = :curvature (the opt-in concentration feature, :uniform mode only): per-surface-vertex
+    target L0(x) = clamp(alpha / kappa(x), h_min, h_max), kappa estimated DISCRETELY as the max
+    angle between the vertex pseudo-normal and its surface-neighbors' pseudo-normals divided by
+    edge length (no SDF derivatives); then GRADIENT LIMITING: one Dijkstra-like relaxation pass
+    over the active-band edge graph enforcing h_j <= h_i + g*|e_ij| (discrete |grad h| <= g,
+    Persson 2006 — this is the published answer to "denser spots must not pull and degrade their
+    neighbors"); interior L0 = limited h propagated inward. Honest expectation (document it):
+    with fixed topology this yields MILD concentration (edge ratios ~1.5-2x), not true
+    refinement — real refinement is Etapa 6's octree.
+  • OUT OF SCOPE (explicit follow-ups, do not build now): mode = :both (a :uniform pass followed
+    by :quality sweeps — safe to chain since the gate is monotone, but ship the two modes first);
+    worklist/priority-queue scheduling (only re-visit vertices whose star changed) — add only if
+    profiling shows the plain band sweeps are too slow.
+
+VERIFY (run scratch/timeit.jl before/after; budget: :uniform ~1 s, :quality a few s on gripper):
+  1. OFF: full test suite green unchanged (64/64 today), beam + gripper byte-identical to the
+     pre-Etapa-10 head. The quartet oracle workflow is untouched.
+  2. :uniform ON (beam, default band/sweeps): watertight (open edges 0), 0 inverted (exact
+     predicate), single component, every surface vertex has |eval_sdf| <= bisection tol, every
+     interior vertex eval_sdf < 0, min dihedral >= the pre-pass value (sharp gate assertion),
+     and the coefficient of variation of active-band edge lengths strictly DECREASES (this is
+     the point of the mode — assert it).
+  3. :quality ON (beam): same invariants, plus min dihedral strictly INCREASES vs pre-pass and
+     the >140 deg count does not grow (expect it to shrink). Freeze the achieved numbers as the
+     relaxed regression baseline AFTER the owner approves the first verified run.
+  4. Determinism: run each mode twice — identical output (hash X and IEN).
+  5. Unstructured source: the analytic-sphere HEX8 case (test_sdf_sources.jl) with relaxation ON
+     must pass the same invariants; judge surface fidelity by GEOMETRIC distance to the true
+     sphere — boundary_max_abs_sdf is NOT a valid metric for unstructured sources (known gotcha).
+  6. Curvature sizing ON: edge lengths near high-curvature regions shrink toward alpha/kappa,
+     the h-field respects the grading bound g, and ALL invariants of (2) still hold.
+  7. With plane_definitions set: planes still come out aligned (plane warp runs after relax).
+  8. OPTIONAL qualitative cross-check: build the quartet driver with optimize=true and compare
+     the achieved min dihedral on beam f4 against our :quality mode. NOT bit-comparable (quartet
+     uses rand(), float32 .tet output, gradient projection) — compare the quality statistics only.
+CLOSEOUT as usual. README: document RelaxOptions (both modes, default OFF, the curvature option +
+its honest limits), state explicitly that surface nodes remain on phi = 0 (why this is NOT the
+removed volume correction), and update the TODO list. Update this file's Status block.
 ````

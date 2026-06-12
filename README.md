@@ -18,6 +18,7 @@ Implicit2TetMesh is an experimental Julia package for generating high-quality te
 - **Geometric Constraints**: Bounded plane definitions for selective node alignment
 - **Mesh Operations**: Slicing, isolated component removal, inverted element fixing, and VTU export with mesh quality metrics
 - **Pluggable Input Fields**: structured SDF grids (trilinear) *and* unstructured conforming HEX8 finite-element fields (isoparametric shape functions) behind one interface, with SIMP-density and level-set adapters; the generation lattice stays structured by design
+- **Optional Gated Relaxation**: an opt-in post-pass (default OFF) that improves the near-boundary element layer without changing topology — either equalizing element sizes (DistMesh springs) or lifting the worst dihedral angles (quartet-style maximin smoothing). A two-sided quality gate makes it safe by construction: an accepted move never sharpens the smallest dihedral nor widens the largest, and surface nodes stay exactly on the zero level set
 
 ## Installation
 
@@ -71,7 +72,8 @@ MeshGenerationOptions(;
     warp_param::Float64 = 0.3,                        # Warping intensity for plane alignment (0.0 = disabled)
     plane_definitions::Union{Vector{PlaneDefinition}, Nothing} = nothing,  # Cutting planes for BC application
     quality_export::Bool = false,                     # Export detailed quality metrics
-    cut_points::Symbol = :linear                      # Surface cut-point location: :linear or :bisection
+    cut_points::Symbol = :linear,                     # Surface cut-point location: :linear or :bisection
+    relax::Union{RelaxOptions, Nothing} = nothing     # Optional relaxation post-pass (nothing = OFF)
 )
 ```
 #### Option Details
@@ -81,6 +83,7 @@ MeshGenerationOptions(;
 - **plane_definitions**: Vector of `PlaneDefinition` objects for boundary plane constraints
 - **quality_export**: When `true`, exports additional quality metrics (Jacobian determinants, dihedral angles, volume ratios)
 - **cut_points**: How the surface cut point on a sign-crossing lattice edge is located, in both the warp and the slicing stage. `:linear` (default) estimates it from the two endpoint SDF values, exactly like the quartet reference implementation — accurate when the input is a true signed distance function. `:bisection` finds the actual zero of the interpolated field along the edge (Labelle & Shewchuk 2007, §3.1); use it when the input field is *not* distance-like (e.g. a smoothed SDF), where the linear estimate misplaces surface vertices and flat walls come out dented.
+- **relax**: An optional [`RelaxOptions`](#mesh-relaxation-optional-post-pass) that enables the gated relaxation post-pass. `nothing` (default) leaves it OFF and the output is unchanged. The pass runs on the final mesh, after connectivity and before any plane cutting.
 
 ### Example Usage
 ```julia
@@ -138,6 +141,60 @@ Two adapters convert common topology-optimization inputs to the `phi < 0 = insid
 > **Verification note.** quartet can only consume structured grids, so there is no cross-validation oracle for unstructured inputs. The unstructured path is instead checked by a **round-trip** (the beam field re-expressed as a HEX8 mesh and forced through the FE path reproduces the structured run within floating-point tolerance) and by watertightness + quality on a genuinely unstructured analytic case — see `test/test_sdf_sources.jl`.
 
 ___
+## Mesh relaxation (optional post-pass)
+
+The A15 interior is already uniform and near-optimal by construction — essentially **all** element-size variance and bad dihedral angles live in the one-to-two element layers that the warp and trim steps create near the boundary. An optional, **default-OFF** post-pass improves exactly that layer. It only **moves vertices** (fixed topology — never a flip, collapse, or insertion), so the watertight trim structure, the node indices, and determinism all survive. Enable it by passing a `RelaxOptions` to `MeshGenerationOptions(relax = …)`, or call `relax_mesh!(mesh, opts)` directly on a finished mesh.
+
+```julia
+# Equalize element sizes near the boundary (DistMesh springs)
+opts = MeshGenerationOptions(relax = RelaxOptions(mode = :uniform))
+mesh = generate_tetrahedral_mesh(grid_file, sdf_file, "beam"; options = opts)
+
+# Or lift the worst dihedral angles (quartet-style maximin smoothing)
+opts = MeshGenerationOptions(relax = RelaxOptions(mode = :quality))
+```
+
+**Two modes, one skeleton.** Every update *proposes* a new position, *gates* it on local element quality, and *projects* surface vertices back onto the surface. The modes differ only in the proposal:
+
+- **`:uniform`** — a DistMesh size-equalizing spring force `d_v = ω·Σ_j (x_j − x_v)(1 − L₀/|e_vj|)` (Persson & Strang 2004). Short edges push, long edges pull; the equilibrium is uniform edge lengths. `L₀` is the median active-band edge length.
+- **`:quality`** — quartet's maximin smoothing (`optimize_tet_mesh.cpp`), done **deterministically** (a fixed candidate pattern around each vertex instead of quartet's random perturbations). It moves the vertex to the position that maximizes the minimum sine-of-dihedral over its incident tets.
+
+**The gate makes safety a construction, not a hope.** A candidate is accepted only if, over every incident tetrahedron, (a) the element stays positively oriented (the same **exact** predicate the pipeline uses), (b) the sharpest dihedral does not get sharper **and** the widest does not get wider (a two-sided check on the dihedral cosines), and (c) interior vertices stay strictly inside (`eval_sdf < 0`). The current position always competes, so an accepted move never worsens either dihedral tail. The hard, testable consequences: **the minimum dihedral never drops, the maximum dihedral never grows, and the element count is unchanged.**
+
+**Surface nodes stay on `phi = 0`.** A surface proposal is projected into the tangent plane and then re-projected onto the zero level set by **bisection along the angle-weighted vertex pseudo-normal** (Thürmer–Wüthrich / Bærentzen–Aanæs), with the bracket clamped to half the local edge length so a thin wall's opposite sheet is never reached. The search direction is the pseudo-normal, **never the SDF gradient** (which is invalid for the SIMP / level-set fields this mesher accepts). This is **not** the removed post-hoc volume correction: it never moves a node off the zero level, so the volume-accuracy contract above is untouched; the volume changes only by chord redistribution.
+
+Measured on the test geometries (mode `:uniform`, default settings):
+
+| geometry | min dihedral | max dihedral | angles < 10° | angles > 140° |
+|----------|:---:|:---:|:---:|:---:|
+| beam     | 11.28° → **18.37°** | 153.21° → **131.62°** | 0 → 0 | 81 → **0** |
+| gripper  | 9.54° → **12.35°**  | 155.36° → **149.85°** | 11 → **0** | 1136 → **91** |
+
+**Options (`RelaxOptions`).** All defaults are starting points meant to be tuned while measuring.
+
+```julia
+RelaxOptions(;
+    mode::Symbol      = :uniform,   # :uniform (springs) or :quality (maximin)
+    max_sweeps::Int   = 10,         # max Gauss-Seidel sweeps over the active set
+    band::Int         = 2,          # active set = surface vertices + `band` rings inward
+    omega::Float64    = 0.3,        # spring step factor (:uniform)
+    sizing::Symbol    = :uniform,   # :uniform (one L₀) or :curvature (per-vertex L₀)
+    alpha::Float64    = 0.5,        # curvature sizing scale: target length ~ alpha / curvature
+    h_min::Float64    = 0.0,        # curvature target clamp (0 = auto, 0.5·grid_step)
+    h_max::Float64    = 0.0,        # curvature target clamp (0 = auto, 4·grid_step)
+    grading::Float64  = 0.3,        # gradient-limit bound g for curvature sizing (Persson 2006)
+    frozen::Vector{Int} = Int[],    # node indices never moved (functional-surface hook)
+    bisection_tol::Float64 = 1e-7,  # |eval_sdf| tolerance for the surface re-projection
+)
+```
+
+- **`band`** keeps the work near the boundary, where the defects are; the interior is left untouched. A very large value (e.g. `typemax(Int)`) relaxes every vertex (experiment-only).
+- **`sizing = :curvature`** (only meaningful for `mode = :uniform`) concentrates elements where the surface bends: a per-vertex target length `clamp(alpha / curvature, h_min, h_max)`, gradient-limited over the active-band edge graph so neighbouring targets differ by at most `g·edge_length` (Persson 2006). With fixed topology this yields only **mild** concentration (edge ratios ~1.5–2×), not true refinement — real refinement is the planned adaptive octree.
+- **`frozen`** is the forward-compatible hook for protecting functional (boundary-condition) surfaces from being moved.
+
+The pass is deterministic (fixed-order sweeps, fixed candidate patterns, no `rand`), so a relaxed mesh can be frozen as a regression baseline. Cost is roughly **~1 s on the beam** and **~12–15 s on the gripper** (whose thin walls put ~⅔ of all nodes inside the band-2 active set); the quartet cross-validation oracle is only ever compared with relaxation OFF.
+
+___
 ## Testing
 The test suite is assertion-based. It combines **invariant** tests — properties every correct
 output must satisfy (watertight boundary, no inverted elements, a single connected component,
@@ -162,6 +219,7 @@ baselines live under `test/helpers/`.
 
 ## TODO List
 - [x] Principled surface-tetrahedron (quadruple-zero) handling per Labelle §3.4
+- [x] Optional gated mesh relaxation post-pass (fixed topology): uniform-sizing "spring" mode and quartet-style quality-optimization mode, surface nodes kept on the zero level set
 - [ ] Optional adaptive refinement for thin features (sub-lattice-thickness walls)
 - [ ] Performance optimizations for large meshes
 

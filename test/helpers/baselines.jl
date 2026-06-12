@@ -50,6 +50,46 @@ const BEAM_DIH_BISECT = (
 )
 
 # ------------------------------------------------------------------------------
+# Beam, no planes, with the Etapa-10 relaxation post-pass (cut_points = :linear).
+# Topology is unchanged (a relaxation only MOVES nodes), so the node/tet counts equal
+# the no-relax beam; only the dihedral histogram moves. The gate guarantees min dihedral
+# does not drop AND max dihedral does not grow vs the no-relax BEAM_DIH (min 11.276, max
+# 153.211, gt140 81): both modes improve both tails. Re-freezable like the others.
+# ------------------------------------------------------------------------------
+# mode = :uniform (DistMesh size-equalizing springs): the surface re-projects onto the
+# trilinear zero and sizes equalize, clearing every cap (gt140 81 -> 0).
+const BEAM_RELAX_UNIFORM_DIH = (
+    min = 18.374,                 # smallest dihedral angle (was 11.276)
+    max = 131.616,                # largest dihedral angle  (was 153.211)
+    lt5 = 0,
+    lt10 = 0,
+    gt140 = 0,                    # caps eliminated (was 81)
+    inverted = 0,
+)
+
+# mode = :quality (quartet-style maximin smoothing): conservative two-sided gate lifts
+# the worst angles a little and shrinks the cap tail (gt140 81 -> 9).
+const BEAM_RELAX_QUALITY_DIH = (
+    min = 12.883,                 # smallest dihedral angle (was 11.276)
+    max = 148.378,                # largest dihedral angle  (was 153.211)
+    lt5 = 0,
+    lt10 = 0,
+    gt140 = 9,                    # cap tail shrunk (was 81)
+    inverted = 0,
+)
+
+# mode = :uniform, sizing = :curvature (mild element concentration where the surface
+# bends; Persson 2006 gradient-limited h-field). Close to plain :uniform on the beam.
+const BEAM_RELAX_CURVATURE_DIH = (
+    min = 18.495,
+    max = 132.936,
+    lt5 = 0,
+    lt10 = 0,
+    gt140 = 0,
+    inverted = 0,
+)
+
+# ------------------------------------------------------------------------------
 # Beam, two cutting planes (Square(30) @ x=0, Square(5) @ x=60, warp_param 0.3).
 # The plane warp only moves nodes, so the counts equal the no-planes mesh.
 # ------------------------------------------------------------------------------

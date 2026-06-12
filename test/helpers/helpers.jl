@@ -13,6 +13,7 @@ using Implicit2TetMesh.GenerateMesh
 using JLD2
 using LinearAlgebra
 using StaticArrays
+using Statistics
 
 # ------------------------------------------------------------------------------
 # Paths and data loading (all @__DIR__-based, never pwd-relative)
@@ -375,6 +376,71 @@ function boundary_max_abs_sdf(mesh::BlockMesh)
         m = max(m, abs(eval_sdf(mesh, mesh.X[v])))
     end
     return m
+end
+
+"""
+    boundary_vertices(mesh) -> Set{Int}
+
+Set of vertices that lie on the mesh boundary (vertices of faces incident to exactly one
+tetrahedron). Shared by the relaxation invariant checks below.
+"""
+function boundary_vertices(mesh::BlockMesh)
+    face_count = Dict{NTuple{3,Int},Int}()
+    for tet in mesh.IEN
+        for f in tet_faces(tet)
+            face_count[f] = get(face_count, f, 0) + 1
+        end
+    end
+    verts = Set{Int}()
+    for (f, c) in face_count
+        if c == 1
+            push!(verts, f[1]); push!(verts, f[2]); push!(verts, f[3])
+        end
+    end
+    return verts
+end
+
+"""
+    max_interior_sdf(mesh) -> Float64
+
+Largest `eval_sdf` over the INTERIOR (non-boundary) vertices. The relaxation gate keeps
+every moved interior vertex strictly inside, and lattice interior vertices start inside,
+so on a valid relaxed mesh this is `< 0`. Returns `-Inf` if there are no interior
+vertices.
+"""
+function max_interior_sdf(mesh::BlockMesh)
+    bverts = boundary_vertices(mesh)
+    m = -Inf
+    for v in eachindex(mesh.X)
+        v in bverts && continue
+        m = max(m, eval_sdf(mesh, mesh.X[v]))
+    end
+    return m
+end
+
+"""
+    surface_edge_cv(mesh) -> Float64
+
+Coefficient of variation (std / mean) of the lengths of all edges incident to a boundary
+vertex. The `:uniform` relaxation mode equalizes element sizes near the boundary, so this
+must DECREASE across the pass. Returns 0.0 if there are no such edges.
+"""
+function surface_edge_cv(mesh::BlockMesh)
+    bverts = boundary_vertices(mesh)
+    seen = Set{NTuple{2,Int}}()
+    lengths = Float64[]
+    for tet in mesh.IEN
+        a, b, c, d = tet[1], tet[2], tet[3], tet[4]
+        for (u, w) in ((a, b), (a, c), (a, d), (b, c), (b, d), (c, d))
+            (u in bverts || w in bverts) || continue
+            ek = (min(u, w), max(u, w))
+            ek in seen && continue
+            push!(seen, ek)
+            push!(lengths, norm(mesh.X[u] - mesh.X[w]))
+        end
+    end
+    isempty(lengths) && return 0.0
+    return std(lengths) / mean(lengths)
 end
 
 """

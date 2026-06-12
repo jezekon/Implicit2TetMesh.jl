@@ -17,6 +17,9 @@ Configuration options for tetrahedral mesh generation.
       Shewchuk 2007 §3.1). Use this when the input field is NOT distance-like (e.g. an
       RBF-smoothed SDF): with `:linear` such fields get surface vertices misplaced into the
       solid, which shows up as dented/wavy flat walls.
+- `relax::Union{RelaxOptions, Nothing}`: optional gated vertex-relaxation post-pass
+  (Etapa 10), `nothing` = OFF (default). When set, the mesh is relaxed after the final
+  connectivity refresh and before export / plane cutting. See [`RelaxOptions`](@ref).
 """
 struct MeshGenerationOptions
     scheme::String
@@ -24,6 +27,7 @@ struct MeshGenerationOptions
     plane_definitions::Union{Vector{PlaneDefinition},Nothing}
     quality_export::Bool
     cut_points::Symbol
+    relax::Union{RelaxOptions,Nothing}
 
     function MeshGenerationOptions(;
         scheme::String = "A15",
@@ -31,6 +35,7 @@ struct MeshGenerationOptions
         plane_definitions::Union{Vector{PlaneDefinition},Nothing} = nothing,
         quality_export::Bool = false,
         cut_points::Symbol = :linear,
+        relax::Union{RelaxOptions,Nothing} = nothing,
     )
         # Validate inputs
         scheme == "A15" || error("Invalid scheme: $scheme. Only 'A15' is supported.")
@@ -38,7 +43,7 @@ struct MeshGenerationOptions
         cut_points === :linear || cut_points === :bisection ||
             error("Invalid cut_points: $cut_points. Use :linear or :bisection.")
 
-        new(scheme, warp_param, plane_definitions, quality_export, cut_points)
+        new(scheme, warp_param, plane_definitions, quality_export, cut_points, relax)
     end
 end
 
@@ -127,6 +132,13 @@ function generate_tetrahedral_mesh(
     # Remove disconnected/isolated mesh components
     remove_isolated_components!(mesh, keep_largest = true)
     update_connectivity!(mesh)                       # final refresh: builds mesh.INE once
+
+    # Optional gated relaxation post-pass (Etapa 10, default OFF). Runs on the final mesh
+    # (INE + boundary triangulation valid), before export and before any plane cutting --
+    # the plane warp must run last so it is not undone. Topology is unchanged.
+    if options.relax !== nothing
+        relax_mesh!(mesh, options.relax)
+    end
 
     # Display volume statistics
     @info "Computing mesh volumes..."

@@ -45,3 +45,11 @@ slice_ambiguous_tetrahedra!(m, "A15"); update_connectivity!(m)
 remove_inverted_elements!(m); remove_isolated_components!(m, keep_largest = true); update_connectivity!(m)
 s = dih(m)
 println("$nm: tets=$(length(m.IEN)) min=$(round(s[1];digits=3)) max=$(round(s[2];digits=3)) <5=$(s[3]) <10=$(s[4]) >140=$(s[5]) inv=$(s[6])")
+
+# Optional Etapa-10 relaxation: pass a mode as the 2nd arg, e.g.
+#   julia --project=. scratch/measure.jl beam uniform   (or: quality)
+if length(ARGS) >= 2
+    relax_mesh!(m, RelaxOptions(mode = Symbol(ARGS[2])))
+    r = dih(m)
+    println("$nm (relax=:$(ARGS[2])): tets=$(length(m.IEN)) min=$(round(r[1];digits=3)) max=$(round(r[2];digits=3)) <5=$(r[3]) <10=$(r[4]) >140=$(r[5]) inv=$(r[6])")
+end

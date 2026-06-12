@@ -327,5 +327,28 @@ end
                 cross(mesh.X[t[3]] - mesh.X[t[1]], mesh.X[t[4]] - mesh.X[t[1]])) / 6
             for t in mesh.IEN)
         @test abs(tetvol - vol_true) / vol_true <= SPHERE_U_VOL_RELERR
+
+        # Etapa 10 -- relaxation ON the unstructured FE path must hold the same invariants
+        # and the hard gate guarantees. Surface fidelity is judged GEOMETRICALLY (distance
+        # to the true sphere); boundary_max_abs_sdf is NOT valid for unstructured sources.
+        rm = deepcopy(mesh)
+        relax_mesh!(rm, RelaxOptions(mode = :uniform))
+        @test length(rm.X) == SPHERE_U_NODES          # topology unchanged
+        @test length(rm.IEN) == SPHERE_U_TETS
+        @test check_watertight(rm).open_edges == 0
+        @test count_inverted_exact(rm) == 0
+        @test count_components(rm) == 1
+        # NB: max_interior_sdf < 0 is NOT asserted here. The relaxation gate keeps every
+        # MOVED interior vertex strictly inside (validated on the beam's clean field), but
+        # this jittered hex block's eval_sdf is noisy near the surface (the overlapping-face
+        # gotcha above), so a few un-moved near-surface vertices already read eval_sdf >= 0
+        # pre-relax -- a property of the distorted field, not of the pass.
+        rs0 = dihedral_stats(mesh)
+        rs = dihedral_stats(rm)
+        @test rs.min >= rs0.min                       # min dihedral does not drop
+        @test rs.max <= rs0.max                       # max dihedral does not grow
+        @test rs.inverted == 0
+        geo_r = maximum(abs(norm(rm.X[v] - center) - radius) for v in boundary_vertex_indices(rm))
+        @test geo_r <= SPHERE_U_GEO_FIDELITY          # boundary stays on the true sphere
     end
 end
