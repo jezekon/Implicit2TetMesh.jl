@@ -1004,3 +1004,59 @@ CLOSEOUT as usual. README: document RelaxOptions (both modes, default OFF, the c
 its honest limits), state explicitly that surface nodes remain on phi = 0 (why this is NOT the
 removed volume correction), and update the TODO list. Update this file's Status block.
 ````
+
+---
+
+## Etapa 11 — Convex boundary cap recovery (OPTIONAL post-pass; topology-growing)  ✅ DONE (awaiting review)
+
+````text
+ETAPA 11 — Optional convex cap recovery: where the flat boundary under-cuts a convex bulge, split
+a boundary tet ABCD (ABC on phi=0, apex D inside) 1:3 by inserting P, the face centroid projected
+outward onto the true zero level set, giving the bipyramid [A,B,P,D],[B,C,P,D],[C,A,P,D].
+(OPTIONAL, default OFF. Depends on Etapas 1-5 + 8 (eval_sdf seam, exact predicates, pluggable
+sources) and reuses Etapa 10's face_outward_normal + reproject_to_surface; INDEPENDENT of 6-7/9.
+A separate output modification, in the same family as Etapa 10 — it does NOT touch the A15 core.)
+
+DELIVERED:
+  • src/Modification/CapRecovery.jl — CapRecoveryOptions (sagitta_frac=0.2, bracket_frac=1.0,
+    max_passes=1, bisection_tol=1e-7, min_volume_frac=0.0) + recover_boundary_caps!. Wired into
+    MeshGenerationOptions.recover_caps (default nothing = OFF); pipeline runs caps AFTER the final
+    update_connectivity!, rebuilds connectivity, THEN relaxes (so :quality smooths the cap tets).
+  • Two-phase, deterministic: build the boundary-face map, COLLECT candidates in index order
+    (exactly one boundary face; ABC on phi=0 & D strictly inside; centroid eval_sdf<0 = convex
+    under-cut; geometric sagitta > sagitta_frac·h_face), then APPLY as a batch. Each accepted split
+    pushes one node (node_sdf=0) and replaces one tet by three.
+  • is_positively_oriented gained a coordinate overload (Stencils.jl) so a sub-tet involving the
+    not-yet-inserted apex is gated through the SAME exact predicate; the mesh overload delegates to
+    it (behaviour-preserving; OFF path byte-identical).
+
+GUARANTEES (verified): conformal + watertight BY CONSTRUCTION (interior faces ABD/BCD/CAD and all
+six edges preserved -> adjacent boundary tets split independently, no hanging node; new boundary
+edges each shared by 2 cap faces). Exact-orientation + degenerate-volume gate on every sub-tet ->
+if any fails the whole split is discarded -> zero inverted/degenerate. node_sdf consistency holds
+(apices on phi=0). Source-agnostic (eval_sdf only) -> works on UnstructuredSDF.
+
+RESULTS / HONEST TRADE-OFFS:
+  • OFF path byte-identical (beam + sphere baselines unchanged; suite 2441/2441 default).
+  • Beam, default sagitta 0.2: 643 caps, nodes 22385->23028, tets 92675->93961, total volume
+    1870.91->1875.64 (+0.25%); watertight/non-inverted/single-component/deterministic.
+  • QUALITY COST IS REAL AND DELIBERATE: cap tets are slivers (beam min dihedral 11.28->0.279 deg,
+    >140 81->735) — the gate guarantees only non-inverted/non-degenerate, NOT well-shaped. The
+    pipeline's :quality relaxation after caps clears the <5 deg slivers (lt5 67->0) and lifts min
+    to ~6.5 deg, but min stays below the no-caps 11.28. This is the §7 tradeoff the plan accepted.
+  • Unstructured sphere: the default sagitta barely fires on a finely-resolved :bisection sphere
+    (~5 caps); 0.05 gives 324 caps. Caps recover VOLUME (toward the analytic ball) but NOT
+    vertex-distance fidelity — new apices sit on the SAME interpolated zero set as the warped
+    boundary (~0.035 off analytic), so geometric fidelity is unchanged. The ~5% volume deficit is
+    dominated by FE-interpolation error, which caps cannot close.
+  • Edge/corner tets (2+ boundary faces) skipped in v1 (a conformal split there needs a red-green
+    edge closure). max_passes>1 supported (refines new cap faces) but defaults to 1.
+
+TESTS: CapRecoveryOptions validation; recover_caps defaults OFF + wires in; beam caps-ON frozen
+counts (BEAM_CAPS_NODES/TETS) + exact 1:3 bookkeeping (tets-off == 2·(nodes-off), boundary faces
++2/cap) + watertight/orientation/volume-gain/determinism + direct-call == pipeline; caps+:quality
+clears lt5; gripper opt-in (invariants only, not frozen); sphere caps frozen + geometric fidelity.
+
+OPEN / OWNER DECISIONS: sagitta_frac & bracket_frac tuning; whether to add an angle-quality gate to
+the split itself (currently volume-only via min_volume_frac); edge/corner recovery as a follow-up.
+````

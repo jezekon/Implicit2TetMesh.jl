@@ -350,5 +350,33 @@ end
         @test rs.inverted == 0
         geo_r = maximum(abs(norm(rm.X[v] - center) - radius) for v in boundary_vertex_indices(rm))
         @test geo_r <= SPHERE_U_GEO_FIDELITY          # boundary stays on the true sphere
+
+        # Etapa 11 -- convex cap recovery on the unstructured FE path. The default
+        # sagitta_frac (0.2) barely fires on this finely resolved :bisection sphere (the
+        # chord bulges are tiny); 0.05 exercises the pass. Caps must hold every structural
+        # invariant, recover volume toward the analytic ball, and -- crucially for an
+        # unstructured source -- judge fidelity GEOMETRICALLY (the new apices sit on the same
+        # interpolated zero set as the warped boundary, so they never stray farther from the
+        # true sphere). boundary_max_abs_sdf is NOT valid here (see the note above).
+        cm = BlockMesh(src; dx = 0.15, padding = 2)
+        generate_tetrahedral_mesh(cm, joinpath(outdir, "sphere_unstructured_caps");
+            options = MeshGenerationOptions(cut_points = :bisection,
+                                            recover_caps = CapRecoveryOptions(sagitta_frac = 0.05)))
+        ccaps = length(cm.X) - SPHERE_U_NODES
+        @test ccaps > 0
+        @test length(cm.IEN) - SPHERE_U_TETS == 2 * ccaps    # exact 1:3 split bookkeeping
+        @test length(cm.X) == SPHERE_U_CAPS_NODES            # frozen, re-freezable
+        @test length(cm.IEN) == SPHERE_U_CAPS_TETS
+        @test check_watertight(cm).open_edges == 0
+        @test count_inverted_exact(cm) == 0
+        @test count_components(cm) == 1
+        @test min_signed_volume(cm) > 0
+        geo_c = maximum(abs(norm(cm.X[v] - center) - radius) for v in boundary_vertex_indices(cm))
+        @test geo_c <= SPHERE_U_GEO_FIDELITY                 # caps never worsen fidelity
+        # Volume moves toward the analytic ball (caps add convex material; never overshoot
+        # past the no-caps deficit into an over-estimate).
+        tetvol_caps = mesh_total_volume(cm)
+        @test tetvol_caps >= tetvol
+        @test tetvol_caps <= vol_true
     end
 end

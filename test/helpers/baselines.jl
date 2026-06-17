@@ -128,3 +128,25 @@ const SPHERE_U_NODES = 19694      # length(mesh.X)
 const SPHERE_U_TETS = 99538       # length(mesh.IEN)
 const SPHERE_U_GEO_FIDELITY = 0.05  # max boundary-vertex distance to |x-c|=r (meas. 0.0352)
 const SPHERE_U_VOL_RELERR = 0.07    # |tet volume - 4/3 pi r^3| / (4/3 pi r^3) (meas. 0.0516)
+
+# ------------------------------------------------------------------------------
+# Etapa 11 -- convex boundary cap recovery (recover_boundary_caps!, default OFF).
+# A cap is a 1:3 split of a boundary tet that under-cuts a convex bulge: it inserts ONE
+# new node on the true zero level set and turns ONE tet into THREE, so the deltas versus
+# the no-caps mesh always satisfy (tets - tets_off) == 2 * (nodes - nodes_off) and the
+# boundary-face count rises by 2 per cap. Caps recover convex VOLUME (total volume rises
+# toward the field's) but at a deliberate QUALITY cost -- the cap tets are slivers, which
+# is why the pass is OFF by default and `:quality`/`:uniform` relaxation is the documented
+# mitigation (see README "Convex cap recovery"). The pass is deterministic, so these counts
+# are a sharp regression signal; re-freezable like the others.
+# ------------------------------------------------------------------------------
+# Beam, default CapRecoveryOptions (sagitta_frac 0.2). 643 caps: +643 nodes, +1286 tets.
+const BEAM_CAPS_NODES = 23028     # length(mesh.X) with recover_caps on (was BEAM_NODES 22385)
+const BEAM_CAPS_TETS = 93961      # length(mesh.IEN) with recover_caps on (was BEAM_TETS 92675)
+
+# Unstructured sphere with sagitta_frac 0.05 (the default 0.2 barely fires on this finely
+# resolved :bisection sphere -- only ~5 caps; 0.05 exercises the pass with 324 caps). Caps
+# never worsen the geometric fidelity to the analytic sphere (new apices sit on the same
+# interpolated zero set as the warped boundary), so SPHERE_U_GEO_FIDELITY still bounds it.
+const SPHERE_U_CAPS_NODES = 20018  # length(mesh.X), caps on (was SPHERE_U_NODES 19694)
+const SPHERE_U_CAPS_TETS = 100186  # length(mesh.IEN), caps on (was SPHERE_U_TETS 99538)

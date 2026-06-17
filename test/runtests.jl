@@ -59,6 +59,34 @@ end
         # Relaxation is OFF by default; a RelaxOptions wires in cleanly.
         @test MeshGenerationOptions().relax === nothing
         @test MeshGenerationOptions(relax = RelaxOptions()).relax isa RelaxOptions
+
+        # Cap recovery is OFF by default; a CapRecoveryOptions wires in cleanly.
+        @test MeshGenerationOptions().recover_caps === nothing
+        @test MeshGenerationOptions(recover_caps = CapRecoveryOptions()).recover_caps isa
+              CapRecoveryOptions
+    end
+
+    @testset "CapRecoveryOptions validation" begin
+        # Defaults are as documented.
+        c = CapRecoveryOptions()
+        @test c.sagitta_frac == 0.2
+        @test c.bracket_frac == 1.0
+        @test c.max_passes == 1
+        @test c.bisection_tol == 1e-7
+        @test c.min_volume_frac == 0.0
+
+        # Rejects out-of-range numeric parameters.
+        @test_throws ErrorException CapRecoveryOptions(sagitta_frac = -0.1)
+        @test_throws ErrorException CapRecoveryOptions(bracket_frac = 0.0)
+        @test_throws ErrorException CapRecoveryOptions(max_passes = 0)
+        @test_throws ErrorException CapRecoveryOptions(bisection_tol = 0.0)
+        @test_throws ErrorException CapRecoveryOptions(min_volume_frac = -1.0)
+
+        # A valid non-default configuration is accepted.
+        ok = CapRecoveryOptions(sagitta_frac = 0.0, max_passes = 2, min_volume_frac = 0.05)
+        @test ok.sagitta_frac == 0.0
+        @test ok.max_passes == 2
+        @test ok.min_volume_frac == 0.05
     end
 
     @testset "RelaxOptions validation" begin
@@ -294,6 +322,88 @@ end
         end
     end
 
+    # Etapa 11 -- optional convex cap recovery. A cap is a 1:3 split of a boundary tet that
+    # under-cuts a convex bulge: +1 surface node, +2 tets, conformal and watertight BY
+    # CONSTRUCTION (see src/Modification/CapRecovery.jl). The pass deliberately trades
+    # element quality for recovered volume; the gate only guarantees non-inverted /
+    # non-degenerate, so the checks here are STRUCTURAL (conformity, watertightness,
+    # orientation, the exact 1:3 bookkeeping, determinism, volume gain) -- NOT dihedral
+    # bounds. `:quality` relaxation is the documented quality mitigation and is exercised
+    # last. Build the no-caps beam once (it IS the frozen BEAM_NODES/BEAM_TETS baseline).
+    @testset "Cap recovery (Etapa 11)" begin
+        outdir = ensure_output_dir()
+        base = generate_tetrahedral_mesh(beam_grid_file(), beam_sdf_file(),
+                                         joinpath(outdir, "caps_base"))
+        base_faces = check_watertight(base).boundary_faces
+        base_vol = mesh_total_volume(base)
+
+        m = generate_tetrahedral_mesh(beam_grid_file(), beam_sdf_file(),
+            joinpath(outdir, "caps_on");
+            options = MeshGenerationOptions(recover_caps = CapRecoveryOptions()))
+
+        # Frozen counts (re-freezable). Each cap is +1 node and +2 tets.
+        @test length(m.X) == BEAM_CAPS_NODES
+        @test length(m.IEN) == BEAM_CAPS_TETS
+
+        # The 1:3 bookkeeping is exact: caps = added nodes, and tets grow by twice that.
+        caps = length(m.X) - BEAM_NODES
+        @test caps > 0
+        @test length(m.IEN) - BEAM_TETS == 2 * caps
+
+        # Conformity / no hanging node: every cap replaces ONE boundary face (ABC) by THREE
+        # (ABP/BCP/CAP), so the boundary-face count rises by exactly 2 per cap, and the
+        # boundary stays watertight (the correctness criterion -- no crack).
+        @test check_watertight(m).boundary_faces - base_faces == 2 * caps
+        @test check_watertight(m).open_edges == 0
+
+        # Orientation / validity invariants (the gate's hard guarantees).
+        @test count_inverted_exact(m) == 0
+        @test min_signed_volume(m) > 0
+        @test count_components(m) == 1
+        @test all_finite_coords(m)
+        @test all_indices_in_bounds(m)
+
+        # New apices lie on phi = 0 (node_sdf = 0), so node-SDF consistency still holds.
+        @test node_sdf_consistency(m).pristine_within_tol
+
+        # Efficacy: recovering convex under-cut material RAISES the total volume.
+        @test mesh_total_volume(m) > base_vol
+
+        # The direct call (+ the connectivity rebuild the pipeline does) must reproduce the
+        # wired-in pipeline result exactly.
+        d = deepcopy(base)
+        recover_boundary_caps!(d, CapRecoveryOptions())
+        update_connectivity!(d)
+        @test d.X == m.X
+        @test d.IEN == m.IEN
+
+        # Determinism: same input -> identical output (so caps baselines can be frozen).
+        @testset "determinism" begin
+            d1 = deepcopy(base); recover_boundary_caps!(d1, CapRecoveryOptions())
+            d2 = deepcopy(base); recover_boundary_caps!(d2, CapRecoveryOptions())
+            @test d1.X == d2.X
+            @test d1.IEN == d2.IEN
+        end
+
+        # Quality mitigation: the cap tets are slivers by design, but the gated `:quality`
+        # relaxation that runs AFTER caps clears the sub-5-degree slivers and keeps every
+        # element non-inverted -- the intended caps + relaxation workflow.
+        @testset "caps + :quality relaxation" begin
+            mr = generate_tetrahedral_mesh(beam_grid_file(), beam_sdf_file(),
+                joinpath(outdir, "caps_relax");
+                options = MeshGenerationOptions(
+                    recover_caps = CapRecoveryOptions(),
+                    relax = RelaxOptions(mode = :quality, max_sweeps = 20)))
+            @test length(mr.X) == BEAM_CAPS_NODES        # relaxation only moves nodes
+            @test length(mr.IEN) == BEAM_CAPS_TETS
+            @test check_watertight(mr).open_edges == 0
+            @test count_inverted_exact(mr) == 0
+            s = dihedral_stats(mr)
+            @test s.lt5 == 0                             # worst slivers cleared
+            @test s.inverted == 0
+        end
+    end
+
     @testset "Gripper (opt-in)" begin
         if get(ENV, "I2TM_TEST_GRIPPER", "0") != "1"
             @info "Gripper suite skipped -- set I2TM_TEST_GRIPPER=1 to run it."
@@ -336,6 +446,28 @@ end
             @test s.gt140 <= s0.gt140                 # cap count does not grow
             @test s.lt10 <= s0.lt10                   # sliver count does not grow
             @test surface_edge_cv(rm) < surface_edge_cv(mesh)
+
+            # Etapa 11 at scale: caps hold the structural invariants on the gripper too. The
+            # exact count is not frozen here (sensitive at ~2M tets); the 1:3 bookkeeping,
+            # watertightness, orientation, determinism and volume gain are the meaningful
+            # checks. Quality is intentionally not asserted (cap tets are slivers by design).
+            cm = generate_tetrahedral_mesh(gripper_grid_file(), gripper_sdf_file(),
+                joinpath(outdir, "gripper_caps");
+                options = MeshGenerationOptions(recover_caps = CapRecoveryOptions()))
+            gcaps = length(cm.X) - GRIPPER_NODES
+            @test gcaps > 0
+            @test length(cm.IEN) - GRIPPER_TETS == 2 * gcaps     # exact 1:3 split bookkeeping
+            @test check_watertight(cm).open_edges == 0
+            @test count_inverted_exact(cm) == 0
+            @test count_components(cm) == 1
+            @test min_signed_volume(cm) > 0
+            @test node_sdf_consistency(cm).pristine_within_tol
+            @test mesh_total_volume(cm) > mesh_total_volume(mesh)
+
+            cm2 = generate_tetrahedral_mesh(gripper_grid_file(), gripper_sdf_file(),
+                joinpath(outdir, "gripper_caps2");
+                options = MeshGenerationOptions(recover_caps = CapRecoveryOptions()))
+            @test cm.X == cm2.X && cm.IEN == cm2.IEN              # deterministic
         end
     end
 end

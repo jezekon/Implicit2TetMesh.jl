@@ -133,6 +133,7 @@ function cut_edge!(
 end
 
 """
+    is_positively_oriented(p1, p2, p3, p4) -> Bool
     is_positively_oriented(mesh::BlockMesh, tet) -> Bool
 
 The single, EXACT orientation test for a tetrahedron. Returns true iff the tetrahedron
@@ -140,15 +141,29 @@ The single, EXACT orientation test for a tetrahedron. Returns true iff the tetra
 `det[v2-v1, v3-v1, v4-v1] > 0` -- the same sign convention the code used before, but decided
 EXACTLY (no floating-point tolerance) via Shewchuk's adaptive predicate `ExactPredicates.orient`.
 
+The coordinate form takes the four vertex positions directly; the mesh form looks them up by
+index and delegates to it. The coordinate form exists so a candidate tet involving a point that
+is NOT yet in `mesh.X` (e.g. Etapa 11's cap apex before it is inserted) can still be oriented
+through the SAME exact predicate -- the sign decision stays in one place.
+
 NOTE on the sign: `ExactPredicates.orient(a, b, c, d)` returns the OPPOSITE sign of
 `dot(b-a, cross(c-a, d-a))` (verified empirically), so a positive signed volume corresponds to
 `orient(...) < 0`. A flat (zero-volume / coplanar) tetrahedron returns false.
 
-This is the ONE place the orientation sign is decided; every orientation/inversion check in this
-file routes through it so the decision is never duplicated.
+This is the ONE place the orientation sign is decided; every orientation/inversion check in the
+codebase routes through it so the decision is never duplicated.
 """
+function is_positively_oriented(
+    p1::SVector{3,Float64},
+    p2::SVector{3,Float64},
+    p3::SVector{3,Float64},
+    p4::SVector{3,Float64},
+)::Bool
+    return orient(p1, p2, p3, p4) < 0
+end
+
 function is_positively_oriented(mesh::BlockMesh, tet)::Bool
-    return orient(mesh.X[tet[1]], mesh.X[tet[2]], mesh.X[tet[3]], mesh.X[tet[4]]) < 0
+    return is_positively_oriented(mesh.X[tet[1]], mesh.X[tet[2]], mesh.X[tet[3]], mesh.X[tet[4]])
 end
 
 """

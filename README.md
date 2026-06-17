@@ -19,6 +19,7 @@ Implicit2TetMesh is an experimental Julia package for generating high-quality te
 - **Mesh Operations**: Slicing, isolated component removal, inverted element fixing, and VTU export with mesh quality metrics
 - **Pluggable Input Fields**: structured SDF grids (trilinear) *and* unstructured conforming HEX8 finite-element fields (isoparametric shape functions) behind one interface, with SIMP-density and level-set adapters; the generation lattice stays structured by design
 - **Optional Gated Relaxation**: an opt-in post-pass (default OFF) that improves the near-boundary element layer without changing topology — either equalizing element sizes (DistMesh springs) or lifting the worst dihedral angles (quartet-style maximin smoothing). A two-sided quality gate makes it safe by construction: an accepted move never sharpens the smallest dihedral nor widens the largest, and surface nodes stay exactly on the zero level set
+- **Optional Convex Cap Recovery**: an opt-in post-pass (default OFF) that recovers the convex material the flat boundary triangles under-cut. Each qualifying boundary tetrahedron is split 1:3 by inserting a new vertex projected onto the true zero level set, which is conformal and watertight by construction (no hanging nodes, no inversions) and raises the meshed volume. It reads the field only through `eval_sdf`, so it works for structured and unstructured sources alike
 
 ## Installation
 
@@ -56,6 +57,8 @@ Because bubbles are removed here, the global `remove_isolated_components!` pass 
 The mesh volume is an honest discretization of the zero isosurface. Because the boundary is approximated by flat triangles, the meshed volume is slightly smaller than the reference SDF volume wherever the isosurface is curved (about 2.7 % on the beam, 0.4 % on the gripper); this gap shrinks as the lattice is refined, not by moving nodes after meshing.
 
 The package therefore applies **no** post-hoc volume correction. Displacing surface nodes onto a single global SDF level after meshing is equivalent to meshing the `phi = c` isocontour, but done crudely — it degrades the surface fidelity the warp establishes and can produce spiked or inverted elements (the quartet / Labelle reference algorithms have no such step). If an exact target volume is ever required (for example a volume fraction carried over from topology optimization), the recommended approach is to choose the iso-level offset `c` by bisection **before** meshing and run the normal pipeline on the shifted field `phi − c`. That keeps the mesh robust (no spikes or inversions) and preserves the full surface-fidelity guarantee.
+
+The optional [convex cap recovery](#convex-cap-recovery-optional-post-pass) post-pass is **not** a return of that global corrector. It is a *local, gated, curvature-driven* refinement: it only ever **inserts** new vertices on the true `phi = 0` surface (it never moves an existing node off it), only where the flat boundary under-cuts a convex bulge, and only through a conformal 1:3 split that exact predicates keep non-inverted. The recovered material is exactly the crescent between each flat boundary triangle and the curved surface it chords, so the volume deficit closes consistently with "shrinks as the lattice is refined" rather than by distorting the mesh.
 #### Geometric Robustness:
 All tetrahedron orientation and inversion decisions use **exact geometric predicates** (Shewchuk's adaptive-precision `orient3d`, via [ExactPredicates.jl](https://github.com/lairez/ExactPredicates.jl)) rather than a floating-point determinant compared against a hand-tuned tolerance. The sign of each element's signed volume is therefore decided exactly: there is no threshold to guess, a single shared predicate backs every orientation check in the pipeline, and the final mesh is guaranteed to contain no inverted elements. A tolerance is kept in exactly one place — to drop genuinely degenerate (near-zero-volume) elements — where it gates the volume *magnitude*, never the sign. `ExactPredicates` is a standard dependency (listed in `Project.toml`) and is installed automatically.
 #### Return Value:
@@ -73,7 +76,8 @@ MeshGenerationOptions(;
     plane_definitions::Union{Vector{PlaneDefinition}, Nothing} = nothing,  # Cutting planes for BC application
     quality_export::Bool = false,                     # Export detailed quality metrics
     cut_points::Symbol = :linear,                     # Surface cut-point location: :linear or :bisection
-    relax::Union{RelaxOptions, Nothing} = nothing     # Optional relaxation post-pass (nothing = OFF)
+    relax::Union{RelaxOptions, Nothing} = nothing,    # Optional relaxation post-pass (nothing = OFF)
+    recover_caps::Union{CapRecoveryOptions, Nothing} = nothing  # Optional convex cap recovery (nothing = OFF)
 )
 ```
 #### Option Details
@@ -84,6 +88,7 @@ MeshGenerationOptions(;
 - **quality_export**: When `true`, exports additional quality metrics (Jacobian determinants, dihedral angles, volume ratios)
 - **cut_points**: How the surface cut point on a sign-crossing lattice edge is located, in both the warp and the slicing stage. `:linear` (default) estimates it from the two endpoint SDF values, exactly like the quartet reference implementation — accurate when the input is a true signed distance function. `:bisection` finds the actual zero of the interpolated field along the edge (Labelle & Shewchuk 2007, §3.1); use it when the input field is *not* distance-like (e.g. a smoothed SDF), where the linear estimate misplaces surface vertices and flat walls come out dented.
 - **relax**: An optional [`RelaxOptions`](#mesh-relaxation-optional-post-pass) that enables the gated relaxation post-pass. `nothing` (default) leaves it OFF and the output is unchanged. The pass runs on the final mesh, after connectivity and before any plane cutting.
+- **recover_caps**: An optional [`CapRecoveryOptions`](#convex-cap-recovery-optional-post-pass) that enables convex boundary cap recovery. `nothing` (default) leaves it OFF and the output is unchanged. The pass runs on the final mesh, **before** relaxation (so the relaxation can smooth the new cap elements) and before any plane cutting.
 
 ### Example Usage
 ```julia
@@ -195,6 +200,34 @@ RelaxOptions(;
 The pass is deterministic (fixed-order sweeps, fixed candidate patterns, no `rand`), so a relaxed mesh can be frozen as a regression baseline. Cost is roughly **~1 s on the beam** and **~12–15 s on the gripper** (whose thin walls put ~⅔ of all nodes inside the band-2 active set); the quartet cross-validation oracle is only ever compared with relaxation OFF.
 
 ___
+## Convex cap recovery (optional post-pass)
+
+Where the true surface is **convex**, the flat boundary triangles chord across the bulge and leave a thin crescent of material un-meshed. An optional, **default-OFF** post-pass recovers it locally. A boundary tetrahedron `ABCD` whose face `ABC` lies on `phi = 0` and whose apex `D` is inside is split **1:3** into `[A,B,P,D]`, `[B,C,P,D]`, `[C,A,P,D]`, where `P` is the face centroid projected outward onto the true zero level set. `D` and `P` sit on opposite sides of `ABC`, so the cap adds volume and the boundary now follows the curve. Enable it by passing a `CapRecoveryOptions` to `MeshGenerationOptions(recover_caps = …)`, or call `recover_boundary_caps!(mesh, opts)` directly on a finished mesh (then refresh connectivity with `update_connectivity!`).
+
+```julia
+opts = MeshGenerationOptions(recover_caps = CapRecoveryOptions())
+mesh = generate_tetrahedral_mesh(grid_file, sdf_file, "part"; options = opts)
+```
+
+**Conformity is a construction, not a hope.** The split lives entirely inside `ABCD ∪ cap`: the three interior faces `ABD`, `BCD`, `CAD` are each preserved (still shared with the original neighbour), and every edge survives undivided, so two adjacent boundary tetrahedra split **independently** and no hanging node can appear. The only face that changes is the boundary face `ABC` (which had no neighbour), tented into `ABP`, `BCP`, `CAP`; each new boundary edge is shared by exactly two cap faces, so the boundary stays watertight. Every sub-tet is gated by the **exact** orientation predicate plus a degenerate-volume floor — if any of the three fails, the whole split is discarded and the parent kept — so the output is guaranteed free of inverted elements. The pass reads the field only through `eval_sdf`, so it is identical for structured and unstructured sources.
+
+```julia
+CapRecoveryOptions(;
+    sagitta_frac::Float64    = 0.2,   # split only if P lifts off the flat face by > sagitta_frac · h_face
+    bracket_frac::Float64    = 1.0,   # outward search half-length = bracket_frac · h_face
+    max_passes::Int          = 1,     # repeat to refine the new cap faces further (each cap = +2 tets)
+    bisection_tol::Float64   = 1e-7,  # |eval_sdf| tolerance for the outward surface projection
+    min_volume_frac::Float64 = 0.0,   # discard a split if any sub-tet < min_volume_frac · parent volume
+)
+```
+
+- **`sagitta_frac`** is measured as the **geometric** distance `|P − c_f|`, not `|eval_sdf|` (which is not a distance for non-distance / unstructured fields). Larger values recover only the sharpest bulges; `0.0` recovers every convex under-cut.
+- **Quality trade-off.** This pass deliberately trades element quality for recovered volume: the cap tetrahedra are typically **slivers** (the gate guarantees only that they are non-inverted and non-degenerate, *not* well-shaped). It is therefore meant to be followed by the **`:quality` relaxation**, which the pipeline runs automatically after cap recovery and which lifts the worst angles back up while keeping the new surface vertices on `phi = 0`. On the beam this recovers ~0.25 % of the volume at the default `sagitta_frac`; the effect is largest where the surface is coarsely resolved relative to its curvature.
+- **Edge/corner tetrahedra** (two or more boundary faces) are skipped in this version: splitting them conformally would subdivide a shared edge and require a red–green closure. Only simple one-boundary-face tetrahedra are recovered.
+
+The pass is deterministic (tets visited in index order, candidates collected then applied as a batch, no `rand`), so a cap-recovered mesh can be frozen as a regression baseline.
+
+___
 ## Testing
 The test suite is assertion-based. It combines **invariant** tests — properties every correct
 output must satisfy (watertight boundary, no inverted elements, a single connected component,
@@ -220,6 +253,7 @@ baselines live under `test/helpers/`.
 ## TODO List
 - [x] Principled surface-tetrahedron (quadruple-zero) handling per Labelle §3.4
 - [x] Optional gated mesh relaxation post-pass (fixed topology): uniform-sizing "spring" mode and quartet-style quality-optimization mode, surface nodes kept on the zero level set
+- [x] Optional convex cap recovery (conformal 1:3 boundary split onto the true surface) to recover under-cut volume on convex regions
 - [ ] Optional adaptive refinement for thin features (sub-lattice-thickness walls)
 - [ ] Performance optimizations for large meshes
 

@@ -240,6 +240,26 @@ function min_signed_volume(mesh::BlockMesh)
 end
 
 """
+    mesh_total_volume(mesh) -> Float64
+
+Sum of the signed volumes of all tets -- the meshed solid volume. On a valid (non-inverted)
+mesh every term is positive, so this is the total volume. Used by the Etapa-11 cap-recovery
+efficacy check (recovering convex under-cut material must RAISE the total volume). Returns
+0.0 for an empty mesh.
+"""
+function mesh_total_volume(mesh::BlockMesh)
+    isempty(mesh.IEN) && return 0.0
+    v = 0.0
+    for tet in mesh.IEN
+        a = mesh.X[tet[2]] - mesh.X[tet[1]]
+        b = mesh.X[tet[3]] - mesh.X[tet[1]]
+        c = mesh.X[tet[4]] - mesh.X[tet[1]]
+        v += dot(a, cross(b, c)) / 6.0
+    end
+    return v
+end
+
+"""
     count_components(mesh) -> Int
 
 Number of connected components, where two tets are connected if they share a face.
