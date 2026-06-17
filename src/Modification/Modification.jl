@@ -9,7 +9,8 @@ export BoundedPlane,
     Ellipse,
     remove_isolated_components!,
     RelaxOptions,
-    relax_mesh!
+    relax_mesh!,
+    recover_caps!
 
 using StaticArrays
 using LinearAlgebra
@@ -26,5 +27,8 @@ include("CuttingPlaneTypes.jl")
 include("ModifyResultingMesh.jl")
 include("RemoveIsolatedComponents.jl")
 include("RelaxMesh.jl")
+# Cap recovery reuses RelaxMesh's face_outward_normal / reproject_to_surface, so it is
+# included AFTER it (same module, so those un-exported helpers are directly visible).
+include("CapRecovery.jl")
 
 end

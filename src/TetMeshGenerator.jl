@@ -20,6 +20,11 @@ Configuration options for tetrahedral mesh generation.
 - `relax::Union{RelaxOptions, Nothing}`: optional gated vertex-relaxation post-pass
   (Etapa 10), `nothing` = OFF (default). When set, the mesh is relaxed after the final
   connectivity refresh and before export / plane cutting. See [`RelaxOptions`](@ref).
+- `recover_caps::Bool`: optional pre-slice cap-recovery pass (default `false` = OFF). When
+  `true`, pure "+000 spike" tetrahedra (three vertices on `phi = 0`, one outside, centroid
+  inside) have their shared outer apex snapped onto `phi = 0` BEFORE slicing, so the slice
+  retains them and the inward volume the trimmer would discard is recovered. Connectivity is
+  unchanged; OFF is byte-identical to the previous pipeline. See [`recover_caps!`](@ref).
 """
 struct MeshGenerationOptions
     scheme::String
@@ -28,6 +33,7 @@ struct MeshGenerationOptions
     quality_export::Bool
     cut_points::Symbol
     relax::Union{RelaxOptions,Nothing}
+    recover_caps::Bool
 
     function MeshGenerationOptions(;
         scheme::String = "A15",
@@ -36,6 +42,7 @@ struct MeshGenerationOptions
         quality_export::Bool = false,
         cut_points::Symbol = :linear,
         relax::Union{RelaxOptions,Nothing} = nothing,
+        recover_caps::Bool = false,
     )
         # Validate inputs
         scheme == "A15" || error("Invalid scheme: $scheme. Only 'A15' is supported.")
@@ -43,7 +50,8 @@ struct MeshGenerationOptions
         cut_points === :linear || cut_points === :bisection ||
             error("Invalid cut_points: $cut_points. Use :linear or :bisection.")
 
-        new(scheme, warp_param, plane_definitions, quality_export, cut_points, relax)
+        new(scheme, warp_param, plane_definitions, quality_export, cut_points, relax,
+            recover_caps)
     end
 end
 
@@ -123,6 +131,14 @@ function generate_tetrahedral_mesh(
     # slicing below -- the two stages must agree on where the surface crosses an edge.
     warp!(mesh, options.scheme; cut_points = options.cut_points)
     update_connectivity!(mesh; build_ine = false)   # INE not needed until the mesh is final
+
+    # Optional cap recovery (default OFF): snap the apex of inward "+000 spike" tets onto
+    # phi = 0 so the slice keeps them. It only edits node_sdf / X of existing apex nodes (the
+    # same primitive as warp!), leaving connectivity intact -- and the slice rebuilds its own
+    # cut structure from node_sdf -- so no connectivity refresh is needed before slicing.
+    if options.recover_caps
+        recover_caps!(mesh)
+    end
 
     # Process isosurface boundary - remove exterior elements
     slice_ambiguous_tetrahedra!(mesh, options.scheme; cut_points = options.cut_points)
