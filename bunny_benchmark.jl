@@ -80,7 +80,7 @@ const PAGE = 145                   # page size in points -- set it to the SIZE T
 # 145 pt ~= one of three figures across a 16 cm
 # text width; use ~240 for a half-width figure.
 const LINEWIDTH = 0.3              # element edges, points
-const EDGE_ALPHA = 0.8             # element edges, opacity
+const EDGE_ALPHA = 0.65             # element edges, opacity
 
 const SOLID = RGBf(0.72, 0.72, 0.75)  # solid colour of the input surface
 const FACE = RGBf(0.87, 0.87, 0.89)   # element faces -- light, so the edges read
@@ -95,7 +95,7 @@ const GHOST_ALPHA = 0.13           # translucent shell in the cut figure
 # polygons are the tetrahedra's cross-sections (calmer, shows the A15 lattice).
 const CUT_MODE = :crinkle
 const CUT_AZIMUTH = AZIMUTH + 35   # normal of the cutting plane, degrees
-const CUT_OFFSET = 0.05            # plane shift from the centre, fraction of size
+const CUT_OFFSET = -0.1            # plane shift from the centre, fraction of size
 
 if !isfile(GRID_FILE) || !isfile(SDF_FILE)
     error("""
