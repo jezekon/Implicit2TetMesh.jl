@@ -50,6 +50,27 @@ const BEAM_DIH_BISECT = (
 )
 
 # ------------------------------------------------------------------------------
+# Beam, no planes, cut_points = :bisection WITH the cap-recovery pre-pass
+# (recover_caps!, the default-off opt-in). 314 inward "+000 spike" apexes are snapped
+# onto phi = 0 before slicing so their quad-zero caps survive: more tets than plain
+# bisection (95284 vs 94640). A thin tail appears -- snapping an apex distorts a few
+# neighbour tets below 10 deg (min 5.826, lt10 = 4); those are SOLID neighbours, not
+# caps, so the [10,140] cap filter does not remove them. Used only by
+# test/test_beam_stages.jl; the cap-free BEAM_DIH_BISECT stays the core bisection baseline.
+# ------------------------------------------------------------------------------
+const BEAM_BISECT_CAPS_NODES = 23038   # length(mesh.X)
+const BEAM_BISECT_CAPS_TETS = 95284    # length(mesh.IEN)
+
+const BEAM_DIH_BISECT_CAPS = (
+    min = 5.826,                  # smallest dihedral angle
+    max = 155.726,                # largest dihedral angle
+    lt5 = 0,                      # dihedral angles < 5 deg
+    lt10 = 4,                     # dihedral angles < 10 deg
+    gt140 = 64,                   # dihedral angles > 140 deg
+    inverted = 0,                 # tets with non-positive float signed volume
+)
+
+# ------------------------------------------------------------------------------
 # Beam, no planes, with the Etapa-10 relaxation post-pass (cut_points = :linear).
 # Topology is unchanged (a relaxation only MOVES nodes), so the node/tet counts equal
 # the no-relax beam; only the dihedral histogram moves. The gate guarantees min dihedral

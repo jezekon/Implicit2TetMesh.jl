@@ -12,8 +12,10 @@
 # is an RBF-smoothed, NON-distance field, and the per-stage VTUs are meant for
 # visual inspection -- with :linear the flat walls come out dented (see
 # Stencils.jl cut_edge!), which is exactly the artifact this diagnostic would be
-# used to chase. Stage 5 therefore asserts the BEAM_DIH_BISECT baseline, not the
-# :linear BEAM_DIH used by the core no-planes pipeline test.
+# used to chase. The optional cap-recovery pre-pass (recover_caps!, default-off in
+# the pipeline) is ALSO enabled here, so the inspected beam includes the recovered
+# caps. Stage 5 therefore asserts the BEAM_DIH_BISECT_CAPS baseline, not the cap-free
+# :bisection BEAM_DIH_BISECT used by the core no-planes pipeline test.
 #
 # If the pipeline sequence in TetMeshGenerator.jl ever changes, mirror it here.
 #
@@ -65,6 +67,10 @@ end
 
     # --- Stage 3: trim spikes / slice crossing tets --------------------------
     @testset "Stage 3 slice_ambiguous_tetrahedra!" begin
+        # Cap recovery runs between warp's update_connectivity! and the slice, exactly where
+        # the pipeline calls it (default-off there; always on in this diagnostic). It snaps
+        # inward "+000 spike" apexes onto phi = 0 so the slice keeps them as quad-zero caps.
+        recover_caps!(mesh)
         slice_ambiguous_tetrahedra!(mesh, "A15"; cut_points = :bisection)
         update_connectivity!(mesh; build_ine = false)
         export_mesh_vtu(mesh, joinpath(outdir, "Beam-stage_3-sliced.vtu"))
@@ -83,8 +89,11 @@ end
     end
 
     # --- Stage 5: keep the largest component (final refresh builds INE) ------
-    # This stage equals the no-planes pipeline output in :bisection mode, so the
-    # dihedral baseline is shared with the core bisection test (BEAM_DIH_BISECT).
+    # With cap recovery on, this no longer equals the cap-free no-planes pipeline, so it
+    # asserts its OWN baseline BEAM_DIH_BISECT_CAPS (the shared cap-free BEAM_DIH_BISECT is
+    # left for the core bisection test). NOTE the thin tail: snapping apexes distorts a few
+    # neighbour tets below 10 deg (min 5.826, lt10 = 4) -- those are solid neighbours, not
+    # caps, so the [10,140] cap filter does not remove them.
     @testset "Stage 5 remove_isolated_components!" begin
         remove_isolated_components!(mesh, keep_largest = true)
         update_connectivity!(mesh)
@@ -92,12 +101,12 @@ end
         @test count_components(mesh) == 1
         @test check_watertight(mesh).open_edges == 0
         s = dihedral_stats(mesh)
-        @test round(s.min; digits = 3) == BEAM_DIH_BISECT.min
-        @test round(s.max; digits = 3) == BEAM_DIH_BISECT.max
-        @test s.lt5 == BEAM_DIH_BISECT.lt5
-        @test s.lt10 == BEAM_DIH_BISECT.lt10
-        @test s.gt140 == BEAM_DIH_BISECT.gt140
-        @test s.inverted == BEAM_DIH_BISECT.inverted
+        @test round(s.min; digits = 3) == BEAM_DIH_BISECT_CAPS.min
+        @test round(s.max; digits = 3) == BEAM_DIH_BISECT_CAPS.max
+        @test s.lt5 == BEAM_DIH_BISECT_CAPS.lt5
+        @test s.lt10 == BEAM_DIH_BISECT_CAPS.lt10
+        @test s.gt140 == BEAM_DIH_BISECT_CAPS.gt140
+        @test s.inverted == BEAM_DIH_BISECT_CAPS.inverted
     end
 
     # --- Stage 6: warp surface nodes onto the cutting planes -----------------

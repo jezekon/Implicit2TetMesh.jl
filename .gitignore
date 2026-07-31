@@ -27,3 +27,6 @@ scratch/*
 
 # Reference material (quartet / isostuffer sources, papers) — read-only, not part of the package
 Literature/
+
+# Generated figures / meshes from the top-level benchmark scripts (bunny_benchmark.jl)
+output/
