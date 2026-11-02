@@ -56,8 +56,9 @@ end
         @test ok.quality_export == true
         @test MeshGenerationOptions(cut_points = :bisection).cut_points == :bisection
 
-        # Relaxation is OFF by default; a RelaxOptions wires in cleanly.
+        # The experimental passes are OFF by default; a RelaxOptions wires in cleanly.
         @test MeshGenerationOptions().relax === nothing
+        @test MeshGenerationOptions().recover_caps == false
         @test MeshGenerationOptions(relax = RelaxOptions()).relax isa RelaxOptions
     end
 
@@ -294,8 +295,9 @@ end
         end
     end
 
-    # Thesis recompute, session 5: regression tests of the fixes C-F1 (A15 cell skip) and
-    # C-F2 (inverse_hex_map convergence); see THESIS_RECOMPUTE_CHANGES.md.
+    # Thesis recompute, session 5: regression tests of the fixes C-F1 (A15 cell skip),
+    # C-F2 (inverse_hex_map convergence) and C-F3 (node alignment without folds); each fix
+    # is described in the header of the included file.
     include(joinpath(@__DIR__, "test_thesis_recompute_fixes.jl"))
 
     @testset "Gripper (opt-in)" begin

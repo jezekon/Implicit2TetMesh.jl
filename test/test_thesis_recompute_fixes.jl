@@ -1,6 +1,6 @@
 # ==============================================================================
-# Regression tests for the session-5 fixes of the dissertation recompute
-# (THESIS_RECOMPUTE_CHANGES.md, section 7). Each failed before its fix.
+# Regression tests for the session-5 fixes of the dissertation recompute (commit
+# b1985a2, tag thesis-recompute-s5). Each failed before its fix.
 #
 #   C-F1  process_cell_A15! skipped a cell when its 8 grid corners and those of its 6
 #         face neighbours were outside, although the A15 tile has nodes at h/4 inside

@@ -1,5 +1,3 @@
-import Implicit2TetMesh.GenerateMesh: is_positively_oriented   # exact orientation (C-F3)
-
 # Function to check if a point lies on a bounded plane
 function is_on_plane(
     plane::BoundedPlane,
