@@ -30,3 +30,6 @@ Literature/
 
 # Generated figures / meshes from the top-level benchmark scripts (bunny_benchmark.jl)
 output/
+
+# Compiled quartet cross-validation driver (test/quartet_crossval/xval.jl)
+test/quartet_crossval/quartet_driver

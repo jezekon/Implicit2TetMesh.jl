@@ -211,7 +211,12 @@ so a broken stage is named by the failing assertion and can be inspected in Para
 artifacts are written to `test/output/` (git-ignored). Shared check helpers and the frozen
 baselines live under `test/helpers/`.
 
+The lattice fill, warp and trimming are cross-validated step by step against quartet, the reference
+implementation, on the beam and gripper inputs (`test/quartet_crossval/`, needs a C++ build of quartet);
+the method and the last result are in [`doc/VERIFICATION.md`](doc/VERIFICATION.md).
+
 ## TODO List
+- [ ] Bug: structured input on a Float32 grid whose spacing is not exact in binary (the gripper test data) duplicates shared lattice vertices, which leaves non-manifold edges in the mesh; key the vertices by integer lattice coordinates as quartet does — see [`doc/VERIFICATION.md`](doc/VERIFICATION.md#known-issue-found-by-the-comparison)
 - [ ] Performance of the `cut_points = :bisection` path (redundant field evaluations in the warp, the slicing and the A15 cell skip) — diagnosis and plan in [`doc/PERFORMANCE_TODO.md`](doc/PERFORMANCE_TODO.md)
 - [ ] Optional adaptive refinement for thin features (walls thinner than the lattice spacing); graded transition stencils are published for the BCC lattice only (Labelle & Shewchuk 2007, §6), A15 ones would have to be designed
 - [ ] Protection of functional (boundary-condition) surfaces beyond bounded planes, e.g. caller-supplied tagged or non-planar regions, before any surface-moving step
