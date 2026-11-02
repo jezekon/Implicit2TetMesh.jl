@@ -11,7 +11,7 @@
 #     output/bunny/bunny_tet.pdf      -- 3/3 the whole mesh, surface with edges
 #
 # Run:
-#     julia -t auto --project=. bunny_benchmark.jl [dx] [--no-render]
+#     julia -t auto --project=. examples/bunny/bunny_benchmark.jl [dx] [--no-render]
 #
 # `dx` is the spacing of the A15 generation lattice, i.e. THE ELEMENT SIZE, and
 # it is the only knob the figures really need. The bunny is ~86 units long:
@@ -30,7 +30,7 @@
 # Input data
 # ------------------------------------------------------------------------------
 # data/bunny/Z_bunny_Fine{Grid,SDF}_B-1.0.jld2, produced once from the Stanford
-# bunny STL by `bunny_sdf_from_stl.jl` (see that file's header). The field is a
+# bunny STL by `examples/bunny/bunny_sdf_from_stl.jl` (see that file's header). The field is a
 # NARROW BAND: stl2sdf truncates the distance at one cell size, so ~94% of the
 # grid values are saturated at +-1.0042 and only the shell around the surface
 # carries a true distance.
@@ -53,6 +53,8 @@ using Printf
 
 include(joinpath(@__DIR__, "bunny_figures.jl"))     # vector-PDF renderer
 
+const REPO = normpath(joinpath(@__DIR__, "..", ".."))
+
 # ------------------------------------------------------------------------------
 # Parameters -- mesh
 # ------------------------------------------------------------------------------
@@ -60,17 +62,18 @@ const DX = length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 6.0   # element size
 const CUT_POINTS = :bisection      # :bisection (see header) or :linear
 const RENDER = !("--no-render" in ARGS)
 
-const BUNNY_DIR = joinpath(@__DIR__, "data", "bunny")
+const BUNNY_DIR = joinpath(REPO, "data", "bunny")
 const GRID_FILE = joinpath(BUNNY_DIR, "Z_bunny_FineGrid_B-1.0.jld2")
 const SDF_FILE = joinpath(BUNNY_DIR, "Z_bunny_FineSDF_B-1.0.jld2")
-const OUT_DIR = joinpath(@__DIR__, "output", "bunny")
+const OUT_DIR = joinpath(REPO, "output", "bunny")
 
 # ------------------------------------------------------------------------------
 # Parameters -- figures
 # ------------------------------------------------------------------------------
 # Source of the input-surface figure; only this one file lives outside the repo
-# (the STL is git-ignored here). Missing STL = that figure is skipped.
-const STL_FILE = get(ENV, "BUNNY_STL", "/Users/ondra/github/stl2sdf.jl/data/Bunny.stl")
+# (the STL is not part of it): set BUNNY_STL=<path to Bunny.stl>. Missing STL = that
+# figure is skipped.
+const STL_FILE = get(ENV, "BUNNY_STL", "")
 
 const AZIMUTH = 45.0               # view direction, degrees (0 = looking along -Y)
 const ELEVATION = 12.0             # shared by all three figures -- see below
@@ -103,7 +106,7 @@ if !isfile(GRID_FILE) || !isfile(SDF_FILE)
         $GRID_FILE
         $SDF_FILE
     Generate it once with the sibling stl2sdf package:
-        julia -t auto --project=/Users/ondra/github/stl2sdf.jl bunny_sdf_from_stl.jl
+        julia -t auto --project=<path to stl2sdf.jl> examples/bunny/bunny_sdf_from_stl.jl 1.0 <path to Bunny.stl>
     """)
 end
 mkpath(OUT_DIR)
@@ -157,7 +160,7 @@ vtu_file = "$(prefix)_TriMesh-A15.vtu"
 # ------------------------------------------------------------------------------
 # 3. Benchmark report
 # ------------------------------------------------------------------------------
-include(joinpath(@__DIR__, "test", "helpers", "helpers.jl"))   # check_* / dihedral_stats
+include(joinpath(REPO, "test", "helpers", "helpers.jl"))   # check_* / dihedral_stats
 
 wt = check_watertight(mesh)
 dh = dihedral_stats(mesh)

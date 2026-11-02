@@ -2,7 +2,7 @@
 # Stanford bunny: STL -> signed distance field  (one-off data preparation)
 # ==============================================================================
 #
-# Produces the two JLD2 files that `bunny_benchmark.jl` consumes:
+# Produces the two JLD2 files that `examples/bunny/bunny_benchmark.jl` consumes:
 #
 #     data/bunny/Z_bunny_FineGrid_B-<B>.jld2   ->  fine_grid
 #     data/bunny/Z_bunny_FineSDF_B-<B>.jld2    ->  fine_sdf
@@ -13,9 +13,9 @@
 # This step needs the sibling package stl2sdf.jl, which is NOT a dependency of
 # Implicit2TetMesh -- run it in that project's environment:
 #
-#     julia -t auto --project=/Users/ondra/github/stl2sdf.jl bunny_sdf_from_stl.jl
+#     julia -t auto --project=<path to stl2sdf.jl> examples/bunny/bunny_sdf_from_stl.jl <cell_size> <stl_file>
 #
-# Optional positional arguments:  <cell_size>  <stl_file>
+# Positional arguments: <cell_size> (default 1.0) and <stl_file> (or BUNNY_STL=<path>).
 #
 # It only has to be run once; the resulting field is resolution-independent
 # input for the benchmark, which picks its own (coarser) meshing lattice.
@@ -32,11 +32,10 @@ using JLD2
 # Parameters
 # ------------------------------------------------------------------------------
 const CELL_SIZE = length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 1.0
-const STL_FILE = length(ARGS) >= 2 ? ARGS[2] :
-                 "/Users/ondra/github/stl2sdf.jl/data/Bunny.stl"
-const OUT_DIR = joinpath(@__DIR__, "data", "bunny")
+const STL_FILE = length(ARGS) >= 2 ? ARGS[2] : get(ENV, "BUNNY_STL", "")
+const OUT_DIR = joinpath(@__DIR__, "..", "..", "data", "bunny")
 
-isfile(STL_FILE) || error("STL not found: $STL_FILE")
+isfile(STL_FILE) || error("STL not found: '$STL_FILE' (pass it as the 2nd argument or set BUNNY_STL)")
 mkpath(OUT_DIR)
 
 println("STL:        $STL_FILE")
