@@ -15,7 +15,7 @@ mutable struct BlockMesh
     node_sdf::Vector{Float64}                  # SDF values at nodes
     node_map::Dict{Int64,Int64}                # Mapping from original grid node index -> new node index
     cell_center_map::Dict{Tuple{Int,Int,Int},Int64}  # Mapping for cell centers (Steiner points)
-    node_hash::Dict{NTuple{3,Float64},Int64}   # Global dictionary for merging nodes
+    node_hash::Dict{NTuple{3,Int},Int64}       # A15 tile nodes: integer lattice coordinate (quarter cells) -> node index
     sdf_source::SDFSource                       # Pluggable field source; mesh.SDF is its lattice-corner cache
 
     function BlockMesh(fine_sdf::Array, fine_grid::Array)
@@ -47,7 +47,7 @@ mutable struct BlockMesh
         mesh.IEN = Vector{Vector{Int64}}()
         mesh.INE = Vector{Vector{Int64}}()
         mesh.node_sdf = Vector{Float64}()
-        mesh.node_hash = Dict{NTuple{3,Float64},Int64}()
+        mesh.node_hash = Dict{NTuple{3,Int},Int64}()
         # Structured input: the generation lattice IS the input grid, and the source
         # wraps the SAME grid + negated values. eval_sdf therefore returns exactly the
         # original trilinear interpolation (bit-identical), while get_cell_sdf_values
@@ -74,7 +74,7 @@ mutable struct BlockMesh
         mesh.IEN = Vector{Vector{Int64}}()
         mesh.INE = Vector{Vector{Int64}}()
         mesh.node_sdf = Vector{Float64}()
-        mesh.node_hash = Dict{NTuple{3,Float64},Int64}()
+        mesh.node_hash = Dict{NTuple{3,Int},Int64}()
         mesh.sdf_source = source
         return mesh
     end

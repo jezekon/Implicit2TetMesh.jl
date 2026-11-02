@@ -822,10 +822,11 @@ function relax_mesh!(mesh::BlockMesh, opts::RelaxOptions)
         end
     end
 
-    # Bookkeeping: node_hash / node_map are coordinate-keyed connectivity-merge artifacts
-    # (built by update_connectivity!). After moving nodes they are stale, and nothing in
-    # the pipeline reads them past this point (export and the optional plane warp do not),
-    # so empty them to avoid any later code trusting a stale coordinate -> index map.
+    # Bookkeeping: node_hash (lattice key -> fill-time node index, built by generate_mesh!)
+    # and node_map are connectivity-merge artifacts. After renumbering and moving nodes they
+    # are stale, and nothing in the pipeline reads them past this point (export and the
+    # optional plane warp do not), so empty them to avoid any later code trusting a stale
+    # key -> index map.
     empty!(mesh.node_hash)
     empty!(mesh.node_map)
     return mesh

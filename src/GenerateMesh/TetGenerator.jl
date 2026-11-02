@@ -81,7 +81,14 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
         # Compute physical point using linear interpolation
         p = vmins .+ Δ .* local_coord
         p = SVector{3,Float64}(p)  # ensure static vector type
-        p_key = quantize(p, tol)
+        # Key the node by its integer lattice coordinate in quarter cells, not by its rounded
+        # position: on a grid that is not exactly uniform (Float32 coordinates with a
+        # non-dyadic step) neighbouring cells compute a shared tile node a few ulp apart, the
+        # rounding kept two copies, warp! moved them apart and the mesh was cracked inside.
+        # quartet keys its lattice the same way (Vec3i). The first cell that creates the node
+        # sets its position.
+        r = tile_ref[li]
+        p_key = (4i + Int(r[1]), 4j + Int(r[2]), 4k + Int(r[3]))
         if haskey(mesh.node_hash, p_key)
             local_mapping[li] = mesh.node_hash[p_key]
         else

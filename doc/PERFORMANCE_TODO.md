@@ -51,7 +51,7 @@ why stuffing is cheap there. Here the tile spans one grid cell (nodes at h/4) an
 |---|---|---|
 | cache `alpha` per canonical edge in `warp!` | 56 M → 11 M calls, ~211 s → ~41 s | identical up to last bits (edge orientation) |
 | pass that cache on to the slicing | −10 s | identical |
-| C-F1: evaluate each A15 lattice vertex once, reuse it for `node_sdf` at node creation | 12 M → 3.7 M calls, −13 s | identical |
+| C-F1: evaluate each A15 lattice vertex once (keyed by its integer lattice coordinate, like `mesh.node_hash`), reuse it for `node_sdf` at node creation | 12 M → 3.7 M calls, −13 s | identical |
 | `find_surface_nodes` with `face_key` tuples | −8 s | identical |
 | optional: Brent/Illinois instead of 40 halvings (smooth field, ~6–8 calls) | `warp!` → ~8 s | same root to ~1e-12 |
 

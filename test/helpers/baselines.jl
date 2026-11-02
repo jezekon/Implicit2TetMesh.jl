@@ -119,16 +119,21 @@ const BEAM_CUT_TETS = 92675       # length(mesh.IEN) after the plane cut
 
 # ------------------------------------------------------------------------------
 # Gripper, no cutting planes (opt-in: set I2TM_TEST_GRIPPER=1)
+# Re-frozen when the A15 tile nodes got integer lattice keys: the gripper grid is Float32
+# with a non-dyadic step, and the old position-rounding key duplicated 78,806 lattice
+# vertices, which cracked the mesh inside (was 414072 nodes, 1984321 tets, gt140 1136).
+# The counts now equal the same field on an exactly uniform Float64 lattice, and the tet
+# count equals quartet's (doc/VERIFICATION.md).
 # ------------------------------------------------------------------------------
-const GRIPPER_NODES = 414072      # length(mesh.X)
-const GRIPPER_TETS = 1984321      # length(mesh.IEN)
+const GRIPPER_NODES = 408614      # length(mesh.X)
+const GRIPPER_TETS = 1982554      # length(mesh.IEN)
 
 const GRIPPER_DIH = (
     min = 9.537,                  # smallest dihedral angle
     max = 155.359,                # largest dihedral angle
     lt5 = 0,                      # dihedral angles < 5 deg
     lt10 = 11,                    # dihedral angles < 10 deg
-    gt140 = 1136,                 # dihedral angles > 140 deg
+    gt140 = 1053,                 # dihedral angles > 140 deg
     inverted = 0,                 # tets with non-positive float signed volume
 )
 

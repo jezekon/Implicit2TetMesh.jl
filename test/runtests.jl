@@ -300,6 +300,10 @@ end
     # is described in the header of the included file.
     include(joinpath(@__DIR__, "test_thesis_recompute_fixes.jl"))
 
+    # A15 tile nodes keyed by their integer lattice coordinate: a Float32 grid with a
+    # non-dyadic step must not duplicate nodes (that cracked the mesh inside).
+    include(joinpath(@__DIR__, "test_nonuniform_grid.jl"))
+
     @testset "Gripper (opt-in)" begin
         if get(ENV, "I2TM_TEST_GRIPPER", "0") != "1"
             @info "Gripper suite skipped -- set I2TM_TEST_GRIPPER=1 to run it."

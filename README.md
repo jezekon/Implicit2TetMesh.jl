@@ -49,7 +49,7 @@ After trimming, some tetrahedra end up with **all four vertices on the surface**
 
 There is deliberately no "no face adjoins → discard as a bubble" rule: adjacency is counted against solid tetrahedra only, so the interior member of a cluster of quadruple-zero tetrahedra would read as isolated and its removal would leave a tetrahedron-shaped hole below the surface. A genuinely floating piece that passes the centroid test is face-disconnected and is removed by the `remove_isolated_components!` pass that follows (it keeps the largest connected component). Where four warped vertices lie on a sub-lattice-thickness thin feature, the boundary can still self-touch (two surface sheets meeting along an edge); such pinches reflect the uniform lattice resolution and are the target of the planned adaptive refinement, not cracks — the trimmed boundary stays free of open (hole) edges.
 #### Volume Accuracy:
-The mesh volume is an honest discretization of the zero isosurface. Because the boundary is approximated by flat triangles, the meshed volume is slightly smaller than the reference SDF volume wherever the isosurface is curved (about 2.6 % on the beam, 0.4 % on the gripper); this gap shrinks as the lattice is refined, not by moving nodes after meshing.
+The mesh volume is an honest discretization of the zero isosurface. Because the boundary is approximated by flat triangles, the meshed volume is slightly smaller than the reference SDF volume wherever the isosurface is curved (about 2.6 % on the beam, 0.3 % on the gripper); this gap shrinks as the lattice is refined, not by moving nodes after meshing.
 
 The package therefore applies **no** post-hoc volume correction. Displacing surface nodes onto a single global SDF level after meshing is equivalent to meshing the `phi = c` isocontour, but done crudely — it degrades the surface fidelity the warp establishes and can produce spiked or inverted elements (the quartet / Labelle reference algorithms have no such step). If an exact target volume is ever required (for example a volume fraction carried over from topology optimization), the recommended approach is to choose the iso-level offset `c` by bisection **before** meshing and run the normal pipeline on the shifted field `phi − c`. That keeps the mesh robust (no spikes or inversions) and preserves the full surface-fidelity guarantee.
 #### Geometric Robustness:
@@ -162,9 +162,9 @@ Measured with the default `RelaxOptions` (test geometries, `cut_points = :linear
 | beam     | off      | 11.28° | 153.21° | 0  | 81   | |
 | beam     | :uniform | 18.37° | 131.62° | 0  | 0    | 1.3 s |
 | beam     | :quality | 12.88° | 148.38° | 0  | 9    | 0.9 s |
-| gripper  | off      | 9.54°  | 155.36° | 11 | 1136 | |
-| gripper  | :uniform | 12.35° | 149.85° | 0  | 91   | 13 s |
-| gripper  | :quality | 11.92° | 150.43° | 0  | 201  | 16 s |
+| gripper  | off      | 9.54°  | 155.36° | 11 | 1053 | |
+| gripper  | :uniform | 14.67° | 145.18° | 0  | 9    | 13 s |
+| gripper  | :quality | 12.68° | 150.43° | 0  | 139  | 11 s |
 
 ```julia
 RelaxOptions(;
@@ -216,7 +216,6 @@ implementation, on the beam and gripper inputs (`test/quartet_crossval/`, needs 
 the method and the last result are in [`doc/VERIFICATION.md`](doc/VERIFICATION.md).
 
 ## TODO List
-- [ ] Bug: structured input on a Float32 grid whose spacing is not exact in binary (the gripper test data) duplicates shared lattice vertices, which leaves non-manifold edges in the mesh; key the vertices by integer lattice coordinates as quartet does — see [`doc/VERIFICATION.md`](doc/VERIFICATION.md#known-issue-found-by-the-comparison)
 - [ ] Performance of the `cut_points = :bisection` path (redundant field evaluations in the warp, the slicing and the A15 cell skip) — diagnosis and plan in [`doc/PERFORMANCE_TODO.md`](doc/PERFORMANCE_TODO.md)
 - [ ] Optional adaptive refinement for thin features (walls thinner than the lattice spacing); graded transition stencils are published for the BCC lattice only (Labelle & Shewchuk 2007, §6), A15 ones would have to be designed
 - [ ] Protection of functional (boundary-condition) surfaces beyond bounded planes, e.g. caller-supplied tagged or non-planar regions, before any surface-moving step
