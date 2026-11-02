@@ -1,3 +1,5 @@
+import Implicit2TetMesh.GenerateMesh: is_positively_oriented   # exact orientation (C-F3)
+
 # Function to check if a point lies on a bounded plane
 function is_on_plane(
     plane::BoundedPlane,
@@ -188,9 +190,16 @@ function warp_node_to_planes_isocontour!(
     norm_dist = norm(current_position - mesh.X[node_index])
 
     if norm_dist <= (max_dist * 2)
-        # Update node position
+        # Accept the projection only if every incident tet stays positively oriented (exact
+        # predicate); otherwise leave the node where it is. Before, an inverted tet was later
+        # reoriented by remove_inverted_elements!, i.e. folded (thesis recompute, session 5, C-F3).
+        old_position = mesh.X[node_index]
         mesh.X[node_index] = current_position
+        all(e -> is_positively_oriented(mesh, mesh.IEN[e]), mesh.INE[node_index]) && return :moved
+        mesh.X[node_index] = old_position
+        return :rejected
     end
+    return :too_far
 end
 
 # Main function for plane-based mesh warping - ONLY moves SURFACE nodes
@@ -212,6 +221,9 @@ function warp_mesh_by_planes_sdf!(
     threshold_sdf = warp_param * mesh.grid_step
     println("  warp_param = $warp_param, threshold_sdf = $threshold_sdf")
 
+    # Incident tets of every node, for the inversion check of each projection (C-F3)
+    create_INE!(mesh)
+
     # Find all surface nodes (nodes on boundary faces)
     surface_nodes = find_surface_nodes(mesh)
     println("  Found $(length(surface_nodes)) surface nodes")
@@ -219,6 +231,7 @@ function warp_mesh_by_planes_sdf!(
     # Single pass: warp only surface nodes that are close to planes
     nodes_warped = 0
     nodes_checked = 0
+    nodes_rejected = 0
 
     for node_idx in surface_nodes
         nodes_checked += 1
@@ -226,7 +239,7 @@ function warp_mesh_by_planes_sdf!(
 
         # Warp surface nodes that are close to planes from either side
         if abs(plane_sdf) < threshold_sdf
-            warp_node_to_planes_isocontour!(
+            status = warp_node_to_planes_isocontour!(
                 mesh,
                 node_idx,
                 plane_definitions,
@@ -234,14 +247,18 @@ function warp_mesh_by_planes_sdf!(
                 max_iter,
             )
             nodes_warped += 1
+            nodes_rejected += status === :rejected
         end
     end
 
     println("  Checked $nodes_checked surface nodes")
     println("  Warped $nodes_warped surface nodes to plane surfaces")
+    println("  Left $nodes_rejected nodes in place: their projection would invert an incident tet")
 
-    # Only fix potentially inverted elements caused by node movement
-    # Do NOT delete elements or change mesh topology
+    # No projection can invert a tet any more (C-F3); check it. The call below then only drops
+    # elements with near-zero volume (it reorients nothing).
+    n_inverted = count(t -> !is_positively_oriented(mesh, t), mesh.IEN)
+    n_inverted == 0 || error("warp_mesh_by_planes_sdf!: $n_inverted tets not positively oriented after the alignment")
     remove_inverted_elements!(mesh)
 
     # Update inverse connectivity (INE) to reflect any potential changes

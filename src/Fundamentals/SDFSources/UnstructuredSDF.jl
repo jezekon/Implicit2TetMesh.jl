@@ -95,7 +95,12 @@ function inverse_hex_map(
         all(isfinite, xi) || return xi, false
         maximum(abs.(dxi)) <= xi_tol && break
     end
-    inside = abs(xi[1]) <= 1 + inside_tol &&
+    # Only a converged iterate locates the point: a non-converged one can land in the
+    # reference cube for a point outside the element (thesis recompute, session 5, C-F2).
+    point, _ = hex8_map_and_jacobian(X, xi)
+    converged = norm(point - p) <= 1e-8 * norm(X[7] - X[1])
+    inside = converged &&
+             abs(xi[1]) <= 1 + inside_tol &&
              abs(xi[2]) <= 1 + inside_tol &&
              abs(xi[3]) <= 1 + inside_tol
     return xi, inside

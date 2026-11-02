@@ -294,6 +294,10 @@ end
         end
     end
 
+    # Thesis recompute, session 5: regression tests of the fixes C-F1 (A15 cell skip) and
+    # C-F2 (inverse_hex_map convergence); see THESIS_RECOMPUTE_CHANGES.md.
+    include(joinpath(@__DIR__, "test_thesis_recompute_fixes.jl"))
+
     @testset "Gripper (opt-in)" begin
         if get(ENV, "I2TM_TEST_GRIPPER", "0") != "1"
             @info "Gripper suite skipped -- set I2TM_TEST_GRIPPER=1 to run it."

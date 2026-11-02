@@ -102,6 +102,40 @@ function generate_tetrahedral_mesh(
 end
 
 """
+    load_rbf_source(rbf_file) -> RBFSDF
+
+Load the RBF interpolant exported by rho2sdf.jl (`rbf_eval = :direct`: weights, origin,
+grid step `h`, kernel width `sigma`, cut-off `threshold`, volume `shift`, sign convention
+`inside`) as an [`RBFSDF`](@ref) source.
+"""
+function load_rbf_source(rbf_file::String)
+    d = JLD2.load(rbf_file)
+    return RBFSDF(d["weights"], d["origin"], d["h"];
+        sigma = d["sigma"], threshold = d["threshold"], shift = d["shift"],
+        inside = Symbol(d["inside"]))
+end
+
+"""
+    generate_tetrahedral_mesh(source::SDFSource, output_prefix="output"; dx, padding=2,
+                              options=MeshGenerationOptions())
+
+Mesh the field of an SDF source on a lattice of spacing `dx` over `bbox(source)` plus a
+`padding`-cell ring. For an [`RBFSDF`](@ref) use `dx = source.h` (lattice nodes coincide with
+the RBF centres) and `cut_points = :bisection`, so the surface vertices lie on the zero of
+the RBF field itself.
+"""
+function generate_tetrahedral_mesh(
+    source::SDFSource,
+    output_prefix::String = "output";
+    dx::Real,
+    padding::Integer = 2,
+    options::MeshGenerationOptions = MeshGenerationOptions(),
+)
+    mesh = BlockMesh(source; dx = dx, padding = padding)
+    return generate_tetrahedral_mesh(mesh, output_prefix; options = options)
+end
+
+"""
     generate_tetrahedral_mesh(mesh::BlockMesh, output_prefix="output";
                               options=MeshGenerationOptions())
 
