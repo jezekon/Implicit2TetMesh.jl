@@ -54,10 +54,14 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
             end
         end
 
-        # If the current cell and all neighboring cells are fully outside,
-        # we can safely skip the cell
+        # The grid corners alone can miss interior material thinner than a cell: the A15 tile
+        # has nodes at h/4 inside the cell (and up to h/4 into the + neighbours). Skip the cell
+        # only if none of its tile nodes is inside or on the surface either (Labelle & Shewchuk
+        # 2007, step 1; quartet tests every tile tet). Thesis recompute, session 5 (C-F1).
         if all_neighbors_outside
-            return
+            Δc = mesh.grid[i+1, j+1, k+1] .- mesh.grid[i, j, k]
+            any(r -> eval_sdf(mesh, SVector{3,Float64}(mesh.grid[i, j, k] .+ Δc .* (r ./ 4.0))) <= tol,
+                tile_ref) || return
         end
     end
 
