@@ -162,8 +162,11 @@ function generate_tetrahedral_mesh(
     generate_mesh!(mesh, options.scheme)
 
     # Warp nodes to isosurface (SDF = 0 level set). The cut-point mode is shared with the
-    # slicing below -- the two stages must agree on where the surface crosses an edge.
-    warp!(mesh, options.scheme; cut_points = options.cut_points)
+    # slicing below -- the two stages must agree on where the surface crosses an edge. With
+    # :bisection the slicing also reuses the cut points the warp bisected (alpha_cache): an edge
+    # whose end points the warp did not move is cut at the same point.
+    alpha_cache = CutAlphaCache()
+    warp!(mesh, options.scheme; cut_points = options.cut_points, alpha_cache = alpha_cache)
     update_connectivity!(mesh; build_ine = false)   # INE not needed until the mesh is final
 
     # Optional cap recovery (default OFF): snap the apex of inward "+000 spike" tets onto
@@ -175,7 +178,8 @@ function generate_tetrahedral_mesh(
     end
 
     # Process isosurface boundary - remove exterior elements
-    slice_ambiguous_tetrahedra!(mesh, options.scheme; cut_points = options.cut_points)
+    slice_ambiguous_tetrahedra!(mesh, options.scheme; cut_points = options.cut_points,
+                                alpha_cache = alpha_cache)
     update_connectivity!(mesh; build_ine = false)
     remove_inverted_elements!(mesh)
 

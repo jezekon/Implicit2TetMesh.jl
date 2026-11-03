@@ -6,9 +6,69 @@ function quantize(p::SVector{3,Float64}, tol::Float64)
 end
 
 # ----------------------------
+# SDF value of an A15 tile point, evaluated once per point
+# ----------------------------
+"""
+    TileSDFCache
+
+SDF values of the A15 tile points evaluated so far: integer lattice coordinate of the point (in
+quarter cells, the key of `mesh.node_hash`) -> `(point, eval_sdf(mesh, point))`. Filled and read
+by `tile_point_sdf!`.
+"""
+const TileSDFCache = Dict{NTuple{3,Int},Tuple{SVector{3,Float64},Float64}}
+
+"""
+    tile_point_sdf!(mesh, tile_sdf, key, p) -> Float64
+
+Return `eval_sdf(mesh, p)` for the A15 tile point `p` with the integer lattice coordinate `key`.
+The value is evaluated once and then read from `tile_sdf`.
+
+Neighbouring cells share tile points, and the cell-skip test of `process_cell_A15!` (C-F1)
+evaluates the tile points of a cell before any of its nodes exists. Without the cache a point
+is evaluated about three times on average (gripper: 12.1 M calls for 3.7 M distinct points).
+
+A stored value is reused only when the stored point is bit-identical to `p`. On a grid that is
+not exactly uniform two cells compute a shared tile point a few ulp apart (see the node key in
+`process_cell_A15!`); the value used is then that of `p` itself, so the result is the same as
+without the cache.
+"""
+function tile_point_sdf!(
+    mesh::BlockMesh,
+    tile_sdf::TileSDFCache,
+    key::NTuple{3,Int},
+    p::SVector{3,Float64},
+)::Float64
+    if haskey(tile_sdf, key)
+        stored_point, stored_value = tile_sdf[key]
+        if isequal(stored_point, p)
+            return stored_value
+        end
+    end
+
+    value = eval_sdf(mesh, p)
+    tile_sdf[key] = (p, value)
+    return value
+end
+
+# ----------------------------
 # Function for discretizing a cell using A15 scheme
 # ----------------------------
-function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
+"""
+    process_cell_A15!(mesh, i, j, k, tile_sdf = TileSDFCache())
+
+Fill the grid cell `(i, j, k)` with the A15 tile: create its tile nodes (shared with the
+neighbouring cells through `mesh.node_hash`) and keep the tile tetrahedra that have at least one
+vertex inside or on the surface. Every SDF evaluation at a tile point goes through
+`tile_point_sdf!`, so a point shared by several cells is evaluated once (`tile_sdf` is shared by
+all cells of `generate_mesh!`).
+"""
+function process_cell_A15!(
+    mesh::BlockMesh,
+    i::Int,
+    j::Int,
+    k::Int,
+    tile_sdf::TileSDFCache = TileSDFCache(),
+)
     tol = mesh.grid_tol
 
     # First check the SDF values of the current cell
@@ -60,8 +120,21 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
         # 2007, step 1; quartet tests every tile tet). Thesis recompute, session 5 (C-F1).
         if all_neighbors_outside
             Δc = mesh.grid[i+1, j+1, k+1] .- mesh.grid[i, j, k]
-            any(r -> eval_sdf(mesh, SVector{3,Float64}(mesh.grid[i, j, k] .+ Δc .* (r ./ 4.0))) <= tol,
-                tile_ref) || return
+            any_tile_node_inside = false
+
+            # Test the tile points in the order of tile_ref and stop at the first one inside or
+            # on the surface. The point is computed exactly as at node creation below, so the
+            # cached value can be reused there.
+            for r in tile_ref
+                p = SVector{3,Float64}(mesh.grid[i, j, k] .+ Δc .* (r ./ 4.0))
+                p_key = (4i + Int(r[1]), 4j + Int(r[2]), 4k + Int(r[3]))
+                if tile_point_sdf!(mesh, tile_sdf, p_key, p) <= tol
+                    any_tile_node_inside = true
+                    break
+                end
+            end
+
+            any_tile_node_inside || return
         end
     end
 
@@ -94,7 +167,8 @@ function process_cell_A15!(mesh::BlockMesh, i::Int, j::Int, k::Int)
         else
             push!(mesh.X, p)
 
-            sdf_aprox = eval_sdf(mesh, p)
+            # Evaluated already if a neighbouring cell or the cell-skip test above read it
+            sdf_aprox = tile_point_sdf!(mesh, tile_sdf, p_key, p)
             push!(mesh.node_sdf, sdf_aprox)
             local_index = length(mesh.X)
             local_mapping[li] = local_index
@@ -203,11 +277,19 @@ function generate_mesh!(mesh::BlockMesh, scheme::String)
 
     @info "Generating mesh with $(scheme) scheme..."
 
+    # SDF values of the tile points, shared by all cells (see tile_point_sdf!)
+    tile_sdf = TileSDFCache()
+
     @inbounds for i = 1:(mesh.nx-1)
+        # The cells are visited slab by slab in i. A tile point of cell i has the x lattice
+        # coordinate 4i ... 4i + 5, so the points with x < 4i are never read again. Dropping
+        # them keeps the cache at about one slab of points instead of the whole lattice.
+        filter!(entry -> entry.first[1] >= 4i, tile_sdf)
+
         for j = 1:(mesh.ny-1)
             for k = 1:(mesh.nz-1)
                 if scheme == "A15"
-                    process_cell_A15!(mesh, i, j, k)
+                    process_cell_A15!(mesh, i, j, k, tile_sdf)
                 else
                     error("Unknown scheme: $scheme. Only 'A15' is supported.")
                 end
@@ -237,7 +319,9 @@ reference cut-point computation of Labelle & Shewchuk 2007 (§3.1, their prototy
 reach this for sign-crossing edges whose endpoints are pristine lattice nodes, where the
 stored `node_sdf` equals `eval_sdf` exactly). 40 halvings resolve the cut point to
 ~1e-12 of the edge length, so the result is deterministic and exact for all practical
-purposes. Cost: 40 `eval_sdf` calls per crossing edge (vs 0 for the linear estimate).
+purposes. Cost: 40 `eval_sdf` calls per call (vs 0 for the linear estimate). `warp!` and the
+slicing call it through `cached_bisect_cut_alpha!`, so an edge is bisected once per
+orientation, not once per incident tetrahedron.
 
 This exists for inputs that are NOT distance-like (e.g. an RBF-smoothed field whose
 gradient collapses inside thin features): there the linear estimate
@@ -270,6 +354,51 @@ function bisect_cut_alpha(
 end
 
 """
+    CutAlphaCache
+
+Results of `bisect_cut_alpha` computed so far: `(Xi, Xj, phi_i)` of an oriented edge ->
+`alpha`. Filled and read by `cached_bisect_cut_alpha!`; one cache is shared by `warp!` and
+`slice_ambiguous_tetrahedra!` (see `generate_tetrahedral_mesh`).
+"""
+const CutAlphaCache = Dict{Tuple{NTuple{3,Float64},NTuple{3,Float64},Float64},Float64}
+
+"""
+    cached_bisect_cut_alpha!(alpha_cache, mesh, Xi, Xj, phi_i, phi_j) -> Float64
+
+Return `bisect_cut_alpha(mesh, Xi, Xj, phi_i, phi_j)`. The bisection runs once per oriented
+edge; later calls read the result from `alpha_cache`.
+
+`warp!` visits a crossing edge once per incident tetrahedron (about 5 times on the gripper)
+and the slicing cuts again the edges whose end points the warp did not move. Without the
+cache this costs 40 `eval_sdf` calls each time.
+
+The key holds everything the bisection reads: the two end points in the given order and the
+start value `phi_i` (`phi_j` only documents the bracket). A stored value is therefore exactly
+what the bisection would return. Node indices are not part of the key, so the cache stays
+valid when `update_connectivity!` renumbers the nodes between the warp and the slicing.
+
+The edge is not reduced to one orientation: the bisection from `Xj` to `Xi` gives `1 - alpha`
+only up to the last bits, and the output must stay bit-identical to the uncached code.
+"""
+function cached_bisect_cut_alpha!(
+    alpha_cache::CutAlphaCache,
+    mesh::BlockMesh,
+    Xi::SVector{3,Float64},
+    Xj::SVector{3,Float64},
+    phi_i::Float64,
+    phi_j::Float64,
+)::Float64
+    key = (Tuple(Xi), Tuple(Xj), phi_i)
+    if haskey(alpha_cache, key)
+        return alpha_cache[key]
+    end
+
+    alpha = bisect_cut_alpha(mesh, Xi, Xj, phi_i, phi_j)
+    alpha_cache[key] = alpha
+    return alpha
+end
+
+"""
     validate_cut_points(cut_points::Symbol)
 
 Shared argument check for the `cut_points` mode switch: `:linear` (quartet's endpoint-value
@@ -286,7 +415,7 @@ end
 # Edge-based warp to linear cut points (port of quartet warp_vertices)
 # ------------------------------------------------------------------
 """
-    warp!(mesh, scheme; threshold = 0.3, cut_points = :linear)
+    warp!(mesh, scheme; threshold = 0.3, cut_points = :linear, alpha_cache = CutAlphaCache())
 
 Snap lattice vertices onto the cut points of incident sign-crossing edges.
 
@@ -319,12 +448,16 @@ quartet's `warp_vertices` (make_tet_mesh.cpp:152-193); see Labelle 2007 §3.2.
 `threshold` is quartet's warp coefficient (must lie in `[0, 0.5]`) and is exposed so later
 stages can tune it. `scheme` is kept only for call-site compatibility: the warp operates on
 `mesh.IEN` / `mesh.node_sdf` and is identical for every scheme.
+
+`alpha_cache` (`:bisection` only) receives the bisected cut points; pass the same cache to
+`slice_ambiguous_tetrahedra!` so the slicing does not bisect those edges again.
 """
 function warp!(
     mesh::BlockMesh,
     scheme::String;
     threshold::Float64 = 0.3,
     cut_points::Symbol = :linear,
+    alpha_cache::CutAlphaCache = CutAlphaCache(),
 )
     @info "Warping vertices to edge cut points (threshold = $threshold, cut_points = $cut_points)..."
     @assert 0.0 <= threshold <= 0.5 "warp threshold must lie in [0, 0.5]"
@@ -336,8 +469,10 @@ function warp!(
     displacement = [zero(SVector{3,Float64}) for _ = 1:n]   # quartet's d[]    : vector onto the cut point
     to_warp = falses(n)                                     # quartet's warp_nbr >= 0
 
-    # Visit every edge of every tetrahedron. Shared edges are visited several times,
-    # but keeping the per-vertex minimum makes the repetition harmless.
+    # Visit every edge of every tetrahedron. Shared edges are visited several times (once per
+    # incident tetrahedron): keeping the per-vertex minimum makes the repetition harmless for
+    # the result, and with :bisection alpha_cache makes it cheap (one bisection per oriented
+    # edge instead of one per visit).
     for tet in mesh.IEN
         for u = 1:3
             i = tet[u]
@@ -351,7 +486,8 @@ function warp!(
                     # Fraction along the edge from i to the zero crossing, in (0, 1).
                     alpha =
                         cut_points === :bisection ?
-                        bisect_cut_alpha(mesh, mesh.X[i], mesh.X[j], phi_i, phi_j) :
+                        cached_bisect_cut_alpha!(alpha_cache, mesh, mesh.X[i], mesh.X[j],
+                                                 phi_i, phi_j) :
                         phi_i / (phi_i - phi_j)
                     edge2 = sum(abs2, mesh.X[j] - mesh.X[i])
 

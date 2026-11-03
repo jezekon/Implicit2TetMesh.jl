@@ -216,7 +216,7 @@ implementation, on the beam and gripper inputs (`test/quartet_crossval/`, needs 
 the method and the last result are in [`doc/VERIFICATION.md`](doc/VERIFICATION.md).
 
 ## TODO List
-- [ ] Performance of the `cut_points = :bisection` path (redundant field evaluations in the warp, the slicing and the A15 cell skip) — diagnosis and plan in [`doc/PERFORMANCE_TODO.md`](doc/PERFORMANCE_TODO.md)
+- [ ] Performance of the `cut_points = :bisection` path: the redundant field evaluations in the warp, the slicing and the A15 cell skip are cached; open items (surface-node search of the plane alignment, faster root finder) in [`doc/PERFORMANCE_TODO.md`](doc/PERFORMANCE_TODO.md)
 - [ ] Optional adaptive refinement for thin features (walls thinner than the lattice spacing); graded transition stencils are published for the BCC lattice only (Labelle & Shewchuk 2007, §6), A15 ones would have to be designed
 - [ ] Protection of functional (boundary-condition) surfaces beyond bounded planes, e.g. caller-supplied tagged or non-planar regions, before any surface-moving step
 - [ ] Make CairoMakie (used only by the mesh-quality plots) an optional dependency

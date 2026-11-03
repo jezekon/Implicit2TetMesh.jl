@@ -54,6 +54,16 @@ RBF fields of the cantilever and the gripper):
 - `dev` after the clean-up commits = the merge commit `6a77ab7` in all 14 cases;
 - the merge with C-F1 and C-F3 reverted = `origin/dev` before the merge (`41a4378`) in all 13 cases.
 
+## Bitwise identity of the evaluation caches (2026-11-03)
+
+`CutAlphaCache` (warp and slicing) and `TileSDFCache` (A15 fill), see
+[`PERFORMANCE_TODO.md`](PERFORMANCE_TODO.md). Final mesh (`X`, `node_sdf`, `IEN` with
+`isequal`) against `2e51c5a`: identical in all 6 cases, i.e. the thesis stage-3 pipeline on the
+session-5 clipped fields of the cantilever and the gripper (`:bisection`, with the alignment
+planes), and `generate_tetrahedral_mesh` with planes on the beam and on the gripper test data
+(Float32 grid, not exactly uniform), each with `:linear` and `:bisection`.
+`test/runtests.jl` checks that a shared cache gives the same mesh as a separate cache per stage.
+
 ## Issue found by the comparison (fixed)
 
 `BlockMesh(fine_sdf, fine_grid)` uses the input grid itself as the lattice. When the grid is

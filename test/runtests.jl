@@ -165,6 +165,24 @@ end
         @test length(mesh.X) == BEAM_BISECT_NODES
         @test length(mesh.IEN) == BEAM_BISECT_TETS
         check_dihedral_baseline(dihedral_stats(mesh), BEAM_DIH_BISECT)
+
+        # generate_tetrahedral_mesh shares one CutAlphaCache between warp! and the slicing, so
+        # the slicing reuses the cut points the warp bisected, across the node renumbering of
+        # update_connectivity!. The cache only skips repeated bisections: the same stages run
+        # with a separate cache each must give the bit-identical mesh.
+        fine_grid, fine_sdf = load_beam()
+        separate = BlockMesh(fine_sdf, fine_grid)
+        generate_mesh!(separate, "A15")
+        warp!(separate, "A15"; cut_points = :bisection)
+        update_connectivity!(separate; build_ine = false)
+        slice_ambiguous_tetrahedra!(separate, "A15"; cut_points = :bisection)
+        update_connectivity!(separate; build_ine = false)
+        remove_inverted_elements!(separate)
+        remove_isolated_components!(separate, keep_largest = true)
+        update_connectivity!(separate)
+        @test isequal(separate.X, mesh.X)
+        @test isequal(separate.node_sdf, mesh.node_sdf)
+        @test isequal(separate.IEN, mesh.IEN)
     end
 
     # Per-stage beam diagnostic (defines its own "Beam per-stage diagnostics"
