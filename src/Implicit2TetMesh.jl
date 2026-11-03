@@ -26,6 +26,6 @@ export PlaneDefinition, Rectangle, Square, Circle, Ellipse
 export RelaxOptions, relax_mesh!
 
 # Exports from main module:
-export MeshGenerationOptions, generate_tetrahedral_mesh, load_rbf_source, RBFSDF
+export MeshGenerationOptions, generate_tetrahedral_mesh, load_rbf_source, RBFSDF, ClippedRBFSDF
 
 end # module Implicit2TetMesh

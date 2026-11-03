@@ -1,7 +1,7 @@
 module Fundamentals
 
 export BlockMesh, get_cell_sdf_values, eval_sdf, calculate_volume_from_sdf
-export SDFSource, StructuredSDF, UnstructuredSDF, RBFSDF, bbox
+export SDFSource, StructuredSDF, UnstructuredSDF, RBFSDF, ClippedRBFSDF, DomainDistance, bbox
 export build_sdf_source, simp_to_sdf_source, levelset_to_sdf_source
 
 using StaticArrays
@@ -17,6 +17,8 @@ include("SDFSources/SDFSource.jl")
 include("SDFSources/StructuredSDF.jl")
 include("SDFSources/UnstructuredSDF.jl")
 include("SDFSources/RBFSDF.jl")
+include("SDFSources/DomainDistance.jl")
+include("SDFSources/ClippedRBFSDF.jl")
 include("SDFSources/Adapters.jl")
 
 include("BlockMesh.jl")

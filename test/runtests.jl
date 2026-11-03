@@ -193,6 +193,10 @@ end
     # unstructured HEX8 path, and a genuinely-unstructured analytic sphere.
     include(joinpath(@__DIR__, "test_sdf_sources.jl"))
 
+    # Domain clip of rho2sdf.jl: the design-domain distance, the clipped RBF source and
+    # load_rbf_source reading the clip from the JLD2.
+    include(joinpath(@__DIR__, "test_clipped_rbf.jl"))
+
     # Etapa 10 -- optional gated relaxation. The gate is a CONSTRUCTION: an accepted move
     # never worsens either dihedral tail, so "min dihedral does not drop" and "max dihedral
     # does not grow" are hard, testable guarantees here. Build the pre-relax beam once and

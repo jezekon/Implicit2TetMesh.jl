@@ -102,17 +102,38 @@ function generate_tetrahedral_mesh(
 end
 
 """
-    load_rbf_source(rbf_file) -> RBFSDF
+    load_rbf_source(rbf_file; domain_clip = nothing) -> RBFSDF or ClippedRBFSDF
 
 Load the RBF interpolant exported by rho2sdf.jl (`rbf_eval = :direct`: weights, origin,
 grid step `h`, kernel width `sigma`, cut-off `threshold`, volume `shift`, sign convention
-`inside`) as an [`RBFSDF`](@ref) source.
+`inside`) as an SDF source.
+
+- Domain clip (rho2sdf.jl option `domain_clip`, its default): the file holds `domain_clip = true`,
+  the shift of the clipped body `clip_shift` and the design domain (`domain_nodes`,
+  `domain_elements`). The source is then a [`ClippedRBFSDF`](@ref), the RBF field with
+  `clip_shift` clipped by the signed distance of the domain (`DomainDistance`, capped at 3.5 h
+  as in rho2sdf.jl), so the meshed body lies in the domain and keeps the volume.
+- Otherwise (`domain_clip = false`, or a file written before the clip): an [`RBFSDF`](@ref)
+  with `shift`, the body not clipped.
+
+`domain_clip = nothing` follows the file; `true` / `false` force the clipped / unclipped body
+(`true` needs a file written with the clip).
 """
-function load_rbf_source(rbf_file::String)
+function load_rbf_source(rbf_file::String; domain_clip::Union{Bool,Nothing} = nothing)
     d = JLD2.load(rbf_file)
-    return RBFSDF(d["weights"], d["origin"], d["h"];
-        sigma = d["sigma"], threshold = d["threshold"], shift = d["shift"],
+    file_clipped = get(d, "domain_clip", false)
+    clip = something(domain_clip, file_clipped)
+    clip && !file_clipped &&
+        error("load_rbf_source: $rbf_file holds no domain clip (written with domain_clip = false or before it)")
+
+    rbf = RBFSDF(d["weights"], d["origin"], d["h"];
+        sigma = d["sigma"], threshold = d["threshold"], shift = clip ? d["clip_shift"] : d["shift"],
         inside = Symbol(d["inside"]))
+    clip || return rbf
+
+    # The cap of rho2sdf.jl: |d_D| is exact up to 3.5 h, enough near the surface of the body
+    domain = DomainDistance(d["domain_nodes"], d["domain_elements"], 3.5 * d["h"])
+    return ClippedRBFSDF(rbf, domain)
 end
 
 """
