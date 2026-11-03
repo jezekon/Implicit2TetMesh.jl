@@ -33,3 +33,4 @@ output/
 
 # Compiled quartet cross-validation driver (test/quartet_crossval/xval.jl)
 test/quartet_crossval/quartet_driver
+Manifest.toml
